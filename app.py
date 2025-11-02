@@ -25,7 +25,7 @@ EXCEL_FILE_NAME = 'Il Mostro 5.0.xlsx'
 REFEREE_SHEET_NAME = 'Arbitri'
 TEAM_SHEET_NAMES = [
     'Atalanta', 'Bologna', 'Cagliari', 'Como', 'Cremonese', 'Fiorentina', 
-    'Genoa', 'Hellas Verona', 'Inter', 'Juventus', 'Lazio', 'Lecio', 
+    'Genoa', 'Hellas Verona', 'Inter', 'Juventus', 'Lazio', 'Lecce', 
     'Milan', 'Napoli', 'Parma', 'Pisa', 'Roma', 'Sassuolo', 'Torino', 'Udinese'
 ]
 
