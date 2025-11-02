@@ -237,8 +237,7 @@ def preprocess_data(data):
         else:
             df_players['Posizione_Primaria'] = 'MF'
     
-    # La funzione get_player_role del modello assegna il Ruolo
-    # Assicuriamoci che la colonna Ruolo esista per la FASE 1
+    # Assicuriamo che la colonna Ruolo esista per la FASE 1
     if 'Ruolo' not in df_players.columns:
          try:
             from optimized_prediction_model import get_player_role as get_role
@@ -303,23 +302,14 @@ def get_fouls_suffered_metric(df):
 
 def identify_high_risk_victims(home_df, away_df):
     """
-    Identifica i giocatori che SUBISCONO molti falli.
-    Logica potenziata per rilevare incremento stagionale E Top Player offensivi.
+    Identifica i giocatori che SUBISCONO molti falli, includendo gli attaccanti chiave.
     """
     all_victims = []
     
     for df, team_type in [(home_df, 'Casa'), (away_df, 'Trasferta')]:
         df = get_fouls_suffered_metric(df)
         
-        # Inizializza Ruolo se mancante dopo la pre-elaborazione
-        if 'Ruolo' not in df.columns:
-            try:
-                from optimized_prediction_model import get_player_role as get_role
-                df['Ruolo'] = df['Posizione_Primaria'].apply(get_role)
-            except ImportError:
-                 df['Ruolo'] = 'MF' # Fallback
-        
-        # Filtra i giocatori con dati giocati minimi
+        # Filtra i giocatori con dati giocati significativi
         df_valid = df[(df['Falli_Subiti_Used'] > 0) & (df['90s Giocati Totali'] >= 1)].copy()
         
         if df_valid.empty:
@@ -336,21 +326,20 @@ def identify_high_risk_victims(home_df, away_df):
         SPREAD_THRESHOLD_HIGH = 0.5
         MIN_FOULS_STANDARD = 1.5
         MIN_90S_ACTIVE = 2.0
-        MIN_90S_TOP_PLAYER = 5.0 # Soglia per attaccanti rilevanti
+        MIN_90S_TOP_PLAYER = 5.0 
         MIN_SEASONAL_FOULS = 1.5
         
-        # 1. Rilevazione Estrema (Forte incremento stagionale, tipo Bonny)
+        # 1. Rilevazione Estrema (Forte incremento stagionale)
         victims_forced_seasonal = df_valid[
             (df_valid['Stagional_Spread'] >= SPREAD_THRESHOLD_HIGH) &
             (df_valid['Falli_Subiti_Stagionale'] >= MIN_SEASONAL_FOULS) &
             (df_valid['90s Giocati Totali'] >= MIN_90S_ACTIVE)
         ].copy()
         
-        # 2. Rilevazione Assoluta (Alta media Falli Subiti, >= 2.0)
-        victims_absolute = df_valid[df_valid['Falli_Subiti_Used'] >= MIN_FOULS_STANDARD].copy() # Uso 1.5 per la soglia base Alto
+        # 2. Rilevazione Standard (Media Falli Subiti Alta, >= 1.5)
+        victims_standard = df_valid[df_valid['Falli_Subiti_Used'] >= MIN_FOULS_STANDARD].copy()
         
-        # 3. Rilevazione Top Player (Per giocatori chiave, come Martinez)
-        # Rileva attaccanti con alto volume di gioco
+        # 3. Rilevazione Top Player (Attaccanti chiave con alto volume di gioco - Es. Martinez)
         victims_top_player = df_valid[
             (df_valid['Ruolo'] == 'ATT') &
             (df_valid['90s Giocati Totali'] >= MIN_90S_TOP_PLAYER)
@@ -358,15 +347,14 @@ def identify_high_risk_victims(home_df, away_df):
 
 
         # Combina le tre liste e rimuovi duplicati
-        all_victims_df = pd.concat([victims_absolute, victims_forced_seasonal, victims_top_player]).drop_duplicates(subset=['Player'])
+        all_victims_df = pd.concat([victims_standard, victims_forced_seasonal, victims_top_player]).drop_duplicates(subset=['Player'])
 
         # Processa i risultati combinati
         for _, player in all_victims_df.iterrows():
             
             # Etichettatura (pulita, solo per l'emoji)
             if player['Ruolo'] == 'ATT' and player['90s Giocati Totali'] >= MIN_90S_TOP_PLAYER:
-                # Priorità all'etichetta Top Player
-                risk_label = "🔥 Top Attaccante"
+                risk_label = "⭐ Top Attaccante"
             elif player['Stagional_Spread'] >= SPREAD_THRESHOLD_HIGH:
                 risk_label = "🔥 Stagionale"
             elif player['Falli_Subiti_Used'] >= 2.0:
@@ -386,7 +374,7 @@ def identify_high_risk_victims(home_df, away_df):
                 'Risk_Label': risk_label
             })
             
-    # Ordina i risultati finali (Priorità ai Falli Subiti Usati)
+    # Ordina i risultati finali (Priorità ai Falli Subiti Usata)
     all_victims.sort(key=lambda x: x['Falli_Subiti_90'], reverse=True)
     
     return all_victims
@@ -838,12 +826,25 @@ def main():
     df_players = data['players']
     df_referees = data['referees']
 
+    # === PULIZIA AGGIUNTA PER GLI ARBITRI (RIGHE VUOTE) ===
+    # 1. Rimuovi righe dove 'Nome' o 'Gialli a partita' sono vuoti (NaN)
+    #    Usiamo subset per non eliminare righe solo perché altre colonne (non essenziali qui) sono vuote.
+    df_referees.dropna(subset=['Nome', 'Gialli a partita'], how='all', inplace=True)
+    
+    # 2. Rimuovi spazi bianchi (leading/trailing) per evitare duplicati fittizi
+    df_referees['Nome'] = df_referees['Nome'].astype(str).str.strip()
+    
+    # 3. Rimuovi eventuali righe dove il nome è diventato una stringa vuota dopo lo strip
+    df_referees = df_referees[df_referees['Nome'] != '']
+    # ========================================================
+    
     # === SALVATAGGIO IN SESSION STATE SOLO DOPO IL CARICAMENTO ===
     if st.session_state['full_df_players'] is None:
         st.session_state['full_df_players'] = df_players
     # =========================================================================
     
-    st.sidebar.success(f"✅ Dati caricati: {len(df_players)} giocatori, {len(df_referees)} arbitri")
+    # Aggiorna il conteggio degli arbitri nel messaggio di successo
+    st.sidebar.success(f"✅ Dati caricati: {len(df_players)} giocatori, {len(df_referees['Nome'].unique())} arbitri")
     
     main_prediction_interface(df_players, df_referees)
 
