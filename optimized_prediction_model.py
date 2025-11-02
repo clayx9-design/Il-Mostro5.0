@@ -9,6 +9,7 @@ PRINCIPI CHIAVE:
 2. Dati storici individuali come base solida
 3. Duelli realistici (attaccante vs difensore, laterali opposti)
 4. Calibrazione su medie Serie A reali
+5. **Bilanciamento forzato (2-2 predefinito, 3-1 solo se evidente)**
 """
 
 import pandas as pd
@@ -405,9 +406,12 @@ class OptimizedCardPredictionModel:
         all_players = self._calculate_positional_risk(all_players)
         
         # 3. Identifica duelli critici
+        home_team_name = home_df['Squadra'].iloc[0]
+        away_team_name = away_df['Squadra'].iloc[0]
+        
         critical_matchups = self._identify_critical_matchups(
-            all_players[all_players['Squadra'] == home_df['Squadra'].iloc[0]], 
-            all_players[all_players['Squadra'] == away_df['Squadra'].iloc[0]]
+            all_players[all_players['Squadra'] == home_team_name], 
+            all_players[all_players['Squadra'] == away_team_name]
         )
 
         # 4. Assegna bonus per duelli critici
@@ -449,10 +453,9 @@ class OptimizedCardPredictionModel:
         
         # =================================================================
         # 9. BILANCIAMENTO FORZATO 2-2 / 3-1 (Post-Processing)
+        #    Logica aggiornata per accettare 3-1 solo se la differenza di rischio è netta.
         # =================================================================
         
-        home_team_name = home_df['Squadra'].iloc[0]
-        away_team_name = away_df['Squadra'].iloc[0]
         
         # Separa i giocatori ordinati per squadra
         home_risks = all_players[all_players['Squadra'] == home_team_name]
@@ -465,22 +468,51 @@ class OptimizedCardPredictionModel:
         count_home = (top_4_iniziale['Squadra'] == home_team_name).sum()
         count_away = (top_4_iniziale['Squadra'] == away_team_name).sum()
 
+        RISK_DIFFERENCE_THRESHOLD = 0.40 # Soglia di differenza di rischio per accettare 3-1
+
         # Determina la distribuzione forzata (2-2 è la preferita)
         if (count_home == 4 or count_away == 4) and len(home_risks) >= 2 and len(away_risks) >= 2:
-            # Se troppo sbilanciato (4-0), forzare 2-2
+            # Se troppo sbilanciato (4-0/0-4) -> FORZA 2-2
             top_4_bilanciato.extend(home_risks.head(2).to_dict('records'))
             top_4_bilanciato.extend(away_risks.head(2).to_dict('records'))
+        
         elif (count_home == 3 and count_away == 1) or (count_home == 1 and count_away == 3):
-            # Mantiene la distribuzione 3-1 se è già presente (è un caso "raro" accettabile)
-            top_4_bilanciato = top_4_iniziale.to_dict('records')
+            # Distribuzione 3-1/1-3: Accetta SOLO se la differenza di rischio è netta.
+            
+            dominant_risks = home_risks if count_home == 3 else away_risks
+            minor_risks = away_risks if count_home == 3 else home_risks
+            
+            # Se la squadra minoritaria non ha almeno 2 giocatori nel dataset, accettiamo 3-1
+            if len(minor_risks) < 2:
+                top_4_bilanciato = top_4_iniziale.to_dict('records')
+            else:
+                # Rischio del 3° giocatore dominante vs Rischio del 2° giocatore minoritario
+                # (il 2° giocatore minoritario è il primo escluso se forziamo il 2-2)
+                risk_dominant_3rd = dominant_risks.iloc[2]['Rischio_Finale']
+                risk_minor_2nd = minor_risks.iloc[1]['Rischio_Finale']
+                
+                # La condizione è: il rischio del terzo della squadra dominante è SIGNIFICATIVAMENTE più alto 
+                # del rischio del secondo (escluso) della squadra minoritaria.
+                
+                if risk_dominant_3rd > (risk_minor_2nd + RISK_DIFFERENCE_THRESHOLD):
+                     # Accetta 3-1 se la differenza è netta
+                     top_4_bilanciato = top_4_iniziale.to_dict('records')
+                else:
+                     # Se la differenza non è netta, forza il 2-2
+                     top_4_bilanciato.extend(home_risks.head(2).to_dict('records'))
+                     top_4_bilanciato.extend(away_risks.head(2).to_dict('records'))
+
         elif count_home == 2 and count_away == 2:
             # Mantiene il 2-2 se è già presente
             top_4_bilanciato = top_4_iniziale.to_dict('records')
+        
         else:
-            # Se la distribuzione è 4-0, 0-4 o 3-1/1-3 ma i rischi sono vicini, forza 2-2
-            # Per rendere il 2-2 la regola
-            top_4_bilanciato.extend(home_risks.head(2).to_dict('records'))
-            top_4_bilanciato.extend(away_risks.head(2).to_dict('records'))
+            # Ogni altro caso (es. dati insufficienti in una squadra, ecc.) -> FORZA 2-2 (se possibile)
+            top_4_bilanciato.extend(home_risks.head(min(2, len(home_risks))).to_dict('records'))
+            top_4_bilanciato.extend(away_risks.head(min(2, len(away_risks))).to_dict('records'))
+            # Filtra per assicurarsi che siano esattamente 4
+            top_4_bilanciato = sorted(top_4_bilanciato, key=lambda x: x['Rischio_Finale'], reverse=True)[:4]
+
 
         # Riordina il TOP 4 bilanciato in base al Rischio_Finale (per la visualizzazione)
         top_4_final_df = pd.DataFrame(top_4_bilanciato).sort_values(
@@ -541,7 +573,7 @@ class OptimizedCardPredictionModel:
                 'critical_matchups_found': len(critical_matchups),
                 'high_risk_players': (all_players['Rischio_Finale'] > 0.4).sum(),
                 'weights_used': WEIGHTS,
-                'distribution_forced': '2-2 preferito, 3-1 accettato'
+                'distribution_forced': '2-2 preferito, 3-1 accettato solo se rischio netto (>0.40)'
             }
         }
 
