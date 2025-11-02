@@ -216,7 +216,8 @@ def preprocess_data(data):
         'Media Falli Subiti 90s Totale', 'Media Falli Fatti 90s Totale',
         'Cartellini Gialli Totali', 'Media Falli per Cartellino Totale',
         'Media 90s per Cartellino Totale', 'Ritardo Cartellino (Minuti)',
-        'Minuti Giocati Totali', '90s Giocati Totali'
+        'Minuti Giocati Totali', '90s Giocati Totali', 
+        'Media Falli Subiti 90s Stagionale' # Includi la stagionale per calcoli
     ]
     
     for col in numeric_columns:
@@ -247,46 +248,97 @@ def preprocess_data(data):
     return data
 
 # =========================================================================
-# FUNZIONI GESTIONE TITOLARI (FASE 1)
+# FUNZIONI GESTIONE TITOLARI (FASE 1) - LOGICA AGGIORNATA
 # =========================================================================
 def get_fouls_suffered_metric(df):
-    """Estrae la metrica falli subiti."""
+    """
+    Estrae le metriche dei falli subiti (Totale e Stagionale) 
+    e calcola la metrica 'Falli_Subiti_Used' (Totale > Stagionale).
+    """
     df = df.copy()
-    has_total = 'Media Falli Subiti 90s Totale' in df.columns
-    has_seasonal = 'Media Falli Subiti 90s Stagionale' in df.columns
     
+    # Assicura le colonne per il calcolo
+    total_col = 'Media Falli Subiti 90s Totale'
+    seasonal_col = 'Media Falli Subiti 90s Stagionale'
+    
+    has_total = total_col in df.columns
+    has_seasonal = seasonal_col in df.columns
+    
+    # Inizializza le colonne per il calcolo della differenza
+    df['Falli_Subiti_Totale'] = df.get(total_col, 0.0)
+    df['Falli_Subiti_Stagionale'] = df.get(seasonal_col, 0.0)
+    
+    # Logica di base per 'Falli_Subiti_Used' (priorità a Totale)
     if has_total:
-        df['Falli_Subiti_Used'] = pd.to_numeric(df['Media Falli Subiti 90s Totale'], errors='coerce').fillna(0)
+        df['Falli_Subiti_Used'] = df['Falli_Subiti_Totale']
         if has_seasonal:
-            mask_zero = df['Falli_Subiti_Used'] == 0
-            seasonal_values = pd.to_numeric(df['Media Falli Subiti 90s Stagionale'], errors='coerce').fillna(0)
-            df.loc[mask_zero, 'Falli_Subiti_Used'] = seasonal_values[mask_zero]
+            # Se la media totale è zero o nulla, usa la stagionale
+            mask_zero = (df['Falli_Subiti_Used'] == 0) | df['Falli_Subiti_Used'].isna()
+            df.loc[mask_zero, 'Falli_Subiti_Used'] = df.loc[mask_zero, 'Falli_Subiti_Stagionale']
             df['Falli_Subiti_Source'] = df.apply(
-                lambda row: 'Stagionale' if row['Falli_Subiti_Used'] > 0 and (pd.isna(row.get('Media Falli Subiti 90s Totale')) or row.get('Media Falli Subiti 90s Totale', 0) == 0) else 'Totale',
+                lambda row: 'Stagionale' if row['Falli_Subiti_Used'] > 0 and mask_zero[row.name] else 'Totale',
                 axis=1
             )
         else:
             df['Falli_Subiti_Source'] = 'Totale'
     elif has_seasonal:
-        df['Falli_Subiti_Used'] = pd.to_numeric(df['Media Falli Subiti 90s Stagionale'], errors='coerce').fillna(0)
+        df['Falli_Subiti_Used'] = df['Falli_Subiti_Stagionale']
         df['Falli_Subiti_Source'] = 'Stagionale'
     else:
         df['Falli_Subiti_Used'] = 0
         df['Falli_Subiti_Source'] = 'N/A'
+    
+    df['Falli_Subiti_Used'] = df['Falli_Subiti_Used'].fillna(0)
     return df
 
 def identify_high_risk_victims(home_df, away_df):
-    """Identifica SOLO giocatori che SUBISCONO molti falli."""
+    """
+    Identifica i giocatori che SUBISCONO molti falli, dando un peso maggiore 
+    a quelli la cui media stagionale è significativamente più alta della media totale.
+    """
     high_risk_victims = []
+    
     for df, team_type in [(home_df, 'Casa'), (away_df, 'Trasferta')]:
         df = get_fouls_suffered_metric(df)
         df_valid = df[df['Falli_Subiti_Used'] > 0].copy()
+        
         if df_valid.empty:
             continue
-        threshold_suffered = df_valid['Falli_Subiti_Used'].quantile(0.70)
-        victims = df_valid[df_valid['Falli_Subiti_Used'] >= threshold_suffered].copy()
-        victims = victims.sort_values('Falli_Subiti_Used', ascending=False)
+            
+        # Calcola il Fattore di Incremento Stagionale
+        # Differenza tra Stagionale e Totale, solo per i giocatori con entrambe le medie > 0
+        df_valid['Stagional_Boost'] = np.where(
+            (df_valid['Falli_Subiti_Stagionale'] > 0.5) & (df_valid['Falli_Subiti_Totale'] > 0.5),
+            (df_valid['Falli_Subiti_Stagionale'] - df_valid['Falli_Subiti_Totale']),
+            0
+        )
+        
+        # Applica un bonus se la media Stagionale è ALMENO 0.5 FALLI/90s superiore alla Totale
+        BONUS_THRESHOLD = 0.5
+        df_valid['Fouls_Bonus'] = np.where(
+            df_valid['Stagional_Boost'] >= BONUS_THRESHOLD,
+            df_valid['Stagional_Boost'] * 1.5, # Moltiplica il boost per dargli peso
+            0
+        )
+        
+        # Metrica di Ranking: Media Usata + Bonus Stagionale
+        df_valid['Ranking_Metric'] = df_valid['Falli_Subiti_Used'] + df_valid['Fouls_Bonus']
+
+        # Seleziona i giocatori con Ranking_Metric alta (top 30%)
+        threshold_suffered = df_valid['Ranking_Metric'].quantile(0.70)
+        victims = df_valid[df_valid['Ranking_Metric'] >= threshold_suffered].copy()
+        victims = victims.sort_values('Ranking_Metric', ascending=False)
+        
         for _, player in victims.iterrows():
+            
+            # Etichetta il giocatore se ha ricevuto il bonus stagionale
+            if player['Fouls_Bonus'] > 0:
+                risk_label = "🔥 Alto Rischio Stagionale"
+            elif player['Falli_Subiti_Used'] > 2.0:
+                risk_label = "🔴 Alto Rischio Storico"
+            else:
+                risk_label = "🟡 Rischio Standard"
+
             high_risk_victims.append({
                 'Player': player['Player'],
                 'Squadra': player['Squadra'],
@@ -294,8 +346,14 @@ def identify_high_risk_victims(home_df, away_df):
                 'Falli_Subiti_90': player['Falli_Subiti_Used'],
                 'Falli_Source': player['Falli_Subiti_Source'],
                 'Posizione': player.get('Posizione_Primaria', 'N/A'),
-                'Ruolo': player.get('Ruolo', 'N/A')
+                'Ruolo': player.get('Ruolo', 'N/A'),
+                'Ranking_Metric': player['Ranking_Metric'],
+                'Risk_Label': risk_label
             })
+            
+    # Ordina i risultati finali
+    high_risk_victims.sort(key=lambda x: x['Ranking_Metric'], reverse=True)
+    
     return high_risk_victims
 
 def display_starter_verification(high_risk_victims):
@@ -323,10 +381,11 @@ def display_starter_verification(high_risk_victims):
         if home_victims:
             st.markdown(f"#### 🏠 {home_victims[0]['Squadra']}")
             for player in home_victims:
-                risk_emoji = "🔴" if player['Falli_Subiti_90'] > 2.5 else "🟡"
+                risk_emoji = "🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Storico" in player['Risk_Label'] else "🟡")
+                
                 is_excluded = st.checkbox(
                     f"{risk_emoji} {player['Player']} ({player['Ruolo']}) - "
-                    f"{player['Falli_Subiti_90']:.1f} FS/90",
+                    f"**{player['Falli_Subiti_90']:.1f}** FS/90 - *{player['Risk_Label'].split(' ', 2)[2]}*",
                     key=f"pre_home_{player['Player']}"
                 )
                 if is_excluded:
@@ -336,10 +395,11 @@ def display_starter_verification(high_risk_victims):
         if away_victims:
             st.markdown(f"#### ✈️ {away_victims[0]['Squadra']}")
             for player in away_victims:
-                risk_emoji = "🔴" if player['Falli_Subiti_90'] > 2.5 else "🟡"
+                risk_emoji = "🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Storico" in player['Risk_Label'] else "🟡")
+                
                 is_excluded = st.checkbox(
                     f"{risk_emoji} {player['Player']} ({player['Ruolo']}) - "
-                    f"{player['Falli_Subiti_90']:.1f} FS/90",
+                    f"**{player['Falli_Subiti_90']:.1f}** FS/90 - *{player['Risk_Label'].split(' ', 2)[2]}*",
                     key=f"pre_away_{player['Player']}"
                 )
                 if is_excluded:
