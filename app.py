@@ -110,10 +110,17 @@ st.markdown("""
     .player-details h4 {
         margin-bottom: 3px !important;
         font-size: 1.1em;
+        font-weight: 600; /* Manteniamo grassetto tramite CSS */
     }
     .player-details p {
         font-size: 0.9em;
         color: #777;
+    }
+    /* Stilizzazione del numero di Rank */
+    .player-details .rank-number {
+        font-size: 1.2em; 
+        font-weight: 900; 
+        margin-right: 5px;
     }
     
     /* Stile per il pulsante 'Escludi' nella card */
@@ -318,8 +325,8 @@ def display_starter_verification(high_risk_victims):
             for player in home_victims:
                 risk_emoji = "🔴" if player['Falli_Subiti_90'] > 2.5 else "🟡"
                 is_excluded = st.checkbox(
-                    f"{risk_emoji} **{player['Player']}** ({player['Ruolo']}) - "
-                    f"**{player['Falli_Subiti_90']:.1f}** FS/90",
+                    f"{risk_emoji} {player['Player']} ({player['Ruolo']}) - "
+                    f"{player['Falli_Subiti_90']:.1f} FS/90",
                     key=f"pre_home_{player['Player']}"
                 )
                 if is_excluded:
@@ -331,8 +338,8 @@ def display_starter_verification(high_risk_victims):
             for player in away_victims:
                 risk_emoji = "🔴" if player['Falli_Subiti_90'] > 2.5 else "🟡"
                 is_excluded = st.checkbox(
-                    f"{risk_emoji} **{player['Player']}** ({player['Ruolo']}) - "
-                    f"**{player['Falli_Subiti_90']:.1f}** FS/90",
+                    f"{risk_emoji} {player['Player']} ({player['Ruolo']}) - "
+                    f"{player['Falli_Subiti_90']:.1f} FS/90",
                     key=f"pre_away_{player['Player']}"
                 )
                 if is_excluded:
@@ -354,62 +361,56 @@ def display_starter_verification(high_risk_victims):
 
 def apply_balancing_logic(predictions_df, home_team_name, away_team_name):
     """
-    Applica la logica di bilanciamento 2-2/3-1 al DataFrame filtrato.
-    Questa logica è replicata dal modello (Sezione 9) per coerenza nello scorrimento.
+    Applica la logica di distribuzione ottimizzata al DataFrame filtrato.
     """
     home_risks = predictions_df[predictions_df['Squadra'] == home_team_name]
     away_risks = predictions_df[predictions_df['Squadra'] == away_team_name]
     
-    top_4_bilanciato = []
+    top_4_ottimizzato = []
     
     top_4_iniziale = predictions_df.head(4)
     count_home = (top_4_iniziale['Squadra'] == home_team_name).sum()
     count_away = (top_4_iniziale['Squadra'] == away_team_name).sum()
 
-    RISK_DIFFERENCE_THRESHOLD = 0.40 # Deve corrispondere al valore nel modello
+    RISK_DIFFERENCE_THRESHOLD = 0.40 
 
-    # Determina la distribuzione forzata (2-2 è la preferita)
+    # La logica ottimizzata (2-2 preferito, 3-1 accettato solo se rischio netto) rimane intatta
     if (count_home == 4 or count_away == 4) and len(home_risks) >= 2 and len(away_risks) >= 2:
         # Se troppo sbilanciato (4-0/0-4) -> FORZA 2-2
-        top_4_bilanciato.extend(home_risks.head(2).to_dict('records'))
-        top_4_bilanciato.extend(away_risks.head(2).to_dict('records'))
+        top_4_ottimizzato.extend(home_risks.head(2).to_dict('records'))
+        top_4_ottimizzato.extend(away_risks.head(2).to_dict('records'))
     
     elif (count_home == 3 and count_away == 1) or (count_home == 1 and count_away == 3):
-        # Distribuzione 3-1/1-3: Accetta SOLO se la differenza di rischio è netta.
         
         dominant_risks = home_risks if count_home == 3 else away_risks
         minor_risks = away_risks if count_home == 3 else home_risks
         
         if len(minor_risks) < 2:
-            # Caso limite: Accettiamo 3-1 se non c'è il 2° giocatore nell'altra squadra
-            top_4_bilanciato = top_4_iniziale.to_dict('records')
+            top_4_ottimizzato = top_4_iniziale.to_dict('records')
         else:
-            # Rischio del 3° giocatore dominante vs Rischio del 2° giocatore minoritario
-            # (il 2° giocatore minoritario è il primo escluso se forziamo il 2-2)
             risk_dominant_3rd = dominant_risks.iloc[2]['Rischio_Finale']
             risk_minor_2nd = minor_risks.iloc[1]['Rischio_Finale']
             
             if risk_dominant_3rd > (risk_minor_2nd + RISK_DIFFERENCE_THRESHOLD):
                  # Accetta 3-1 se la differenza è netta
-                 top_4_bilanciato = top_4_iniziale.to_dict('records')
+                 top_4_ottimizzato = top_4_iniziale.to_dict('records')
             else:
                  # Se la differenza non è netta, forza il 2-2
-                 top_4_bilanciato.extend(home_risks.head(2).to_dict('records'))
-                 top_4_bilanciato.extend(away_risks.head(2).to_dict('records'))
+                 top_4_ottimizzato.extend(home_risks.head(2).to_dict('records'))
+                 top_4_ottimizzato.extend(away_risks.head(2).to_dict('records'))
 
     elif count_home == 2 and count_away == 2:
         # Mantiene il 2-2 se è già presente
-        top_4_bilanciato = top_4_iniziale.to_dict('records')
+        top_4_ottimizzato = top_4_iniziale.to_dict('records')
     
     else:
-        # Ogni altro caso (es. dati insufficienti in una squadra, ecc.) -> FORZA 2-2 (se possibile)
-        top_4_bilanciato.extend(home_risks.head(min(2, len(home_risks))).to_dict('records'))
-        top_4_bilanciato.extend(away_risks.head(min(2, len(away_risks))).to_dict('records'))
-        # Filtra per assicurarsi che siano esattamente 4
-        top_4_bilanciato = sorted(top_4_bilanciato, key=lambda x: x['Rischio_Finale'], reverse=True)[:4]
+        # Ogni altro caso -> FORZA 2-2 (se possibile)
+        top_4_ottimizzato.extend(home_risks.head(min(2, len(home_risks))).to_dict('records'))
+        top_4_ottimizzato.extend(away_risks.head(min(2, len(away_risks))).to_dict('records'))
+        top_4_ottimizzato = sorted(top_4_ottimizzato, key=lambda x: x['Rischio_Finale'], reverse=True)[:4]
 
-    # Riordina il TOP 4 bilanciato in base al Rischio_Finale
-    final_df = pd.DataFrame(top_4_bilanciato).sort_values(
+    # Riordina il TOP 4 ottimizzato in base al Rischio_Finale
+    final_df = pd.DataFrame(top_4_ottimizzato).sort_values(
         'Rischio_Finale', ascending=False
     )
     
@@ -446,7 +447,7 @@ def display_dynamic_top_4():
         current_top_4 = result['top_4_predictions']
         
     st.markdown("## 🎯 TOP 4 PRONOSTICO CARTELLINI")
-    st.markdown("Clicca sul pulsante '❌ Escludi' all'interno di ogni card per rimuovere un giocatore non titolare e far scorrere la graduatoria in modo bilanciato (2-2/3-1).")
+    st.markdown("Clicca sul pulsante '❌ Escludi' all'interno di ogni card per rimuovere un giocatore non titolare e far scorrere la graduatoria in modo ottimizzato.")
 
 
     if 'scrolled_exclusions' not in st.session_state:
@@ -469,16 +470,16 @@ def display_dynamic_top_4():
         # Sceglie la colonna in base all'indice
         with cols[(i-1) % 2]:
             
-            # Inizio Card HTML
+            # Inizio Card HTML (Rimosso ogni riferimento al grassetto inutile e bilanciamento)
             st.markdown(f"""
             <div class='player-card' style='border-left-color: {card_color};'>
                 <div class='player-details'>
                     <div>
                         <h4 style='color: #2c3e50; margin-bottom: 3px !important;'>
-                            <span style='font-size: 1.2em; font-weight: 900; color: {card_color}; margin-right: 5px;'>#{i}</span>
-                            **{player_name}** </h4>
+                            <span class='rank-number' style='color: {card_color};'>#{i}</span>
+                            {player_name} </h4>
                         <p style='margin: 0;'>
-                            {squadra} • **Ruolo:** {ruolo} 
+                            {squadra} • Ruolo: {ruolo} 
                         </p>
                     </div>
                     <div style='text-align: right;'>
@@ -497,9 +498,9 @@ def display_dynamic_top_4():
                     # DataFrame filtrato
                     new_top_predictions_df = all_predictions_df[
                         ~all_predictions_df['Player'].isin(excluded_players)
-                    ].copy() # Assicura una copia per evitare SettingWithCopyWarning
+                    ].copy() 
                     
-                    # APPLICA LA LOGICA DI BILANCIAMENTO AL TOP 4 FILTRATO
+                    # APPLICA LA LOGICA DI DISTRIBUZIONE OTTIMIZZATA
                     new_top_4 = apply_balancing_logic(
                         new_top_predictions_df, 
                         st.session_state['home_team'], 
@@ -518,7 +519,8 @@ def display_dynamic_top_4():
 
     # Messaggio di stato
     if st.session_state['scrolled_exclusions']:
-        st.warning(f"⚠️ **ATTENZIONE:** TOP 4 modificato per scorrimento (logica bilanciata applicata). Esclusi (post-analisi): {', '.join(st.session_state['scrolled_exclusions'])}")
+        # Rimosso il riferimento esplicito a "logica bilanciata"
+        st.warning(f"⚠️ **ATTENZIONE:** TOP 4 modificato per scorrimento (distribuzione ottimizzata applicata). Esclusi (post-analisi): {', '.join(st.session_state['scrolled_exclusions'])}")
         if st.button("↩️ Ripristina TOP 4 Originale", key='reset_scrolling', type='primary'):
             if 'scrolled_top_4' in st.session_state:
                 del st.session_state['scrolled_top_4']
