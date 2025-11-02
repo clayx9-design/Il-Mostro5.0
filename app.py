@@ -679,8 +679,9 @@ def main_prediction_interface(df_players, df_referees):
     st.markdown("## 🚀 Sistema Avanzato Predizione Cartellini")
     
     # Selezione squadre e arbitro
-    all_teams = sorted(df_players['Squadra'].unique())
+    # Estraiamo gli arbitri unici per il menu a tendina
     all_referees = sorted(df_referees['Nome'].unique())
+    all_teams = sorted(df_players['Squadra'].unique())
     
     col1, col2, col3 = st.columns(3)
     
@@ -691,6 +692,7 @@ def main_prediction_interface(df_players, df_referees):
         away_team = st.selectbox("✈️ Squadra Trasferta", ['Seleziona...'] + all_teams, key='away')
     
     with col3:
+        # Usiamo l'elenco completo e pulito degli arbitri
         referee = st.selectbox("⚖️ Arbitro", ['Seleziona...'] + all_referees, key='ref')
     
     if home_team == away_team and home_team != 'Seleziona...':
@@ -826,16 +828,25 @@ def main():
     df_players = data['players']
     df_referees = data['referees']
 
-    # === PULIZIA AGGIUNTA PER GLI ARBITRI (RIGHE VUOTE) ===
-    # 1. Rimuovi righe dove 'Nome' o 'Gialli a partita' sono vuoti (NaN)
-    #    Usiamo subset per non eliminare righe solo perché altre colonne (non essenziali qui) sono vuote.
-    df_referees.dropna(subset=['Nome', 'Gialli a partita'], how='all', inplace=True)
+    # === PULIZIA MODIFICATA PER INCLUDERE RIGHE VUOTE/NON VALIDATE ===
     
-    # 2. Rimuovi spazi bianchi (leading/trailing) per evitare duplicati fittizi
+    # La media Serie A per i cartellini (fallback)
+    SERIE_A_AVG_CARDS_PER_GAME = 4.2 
+    
+    # 1. Rimuovi spazi bianchi (leading/trailing)
     df_referees['Nome'] = df_referees['Nome'].astype(str).str.strip()
     
-    # 3. Rimuovi eventuali righe dove il nome è diventato una stringa vuota dopo lo strip
-    df_referees = df_referees[df_referees['Nome'] != '']
+    # 2. Sostituisci i valori mancanti (NaN o stringa 'nan') con placeholder
+    mask_invalid_name = (df_referees['Nome'].isna()) | (df_referees['Nome'] == 'nan') | (df_referees['Nome'] == '')
+    # Assegniamo un nome univoco al placeholder per non fondere accidentalmente le righe incomplete
+    df_referees.loc[mask_invalid_name, 'Nome'] = 'Arbitro Sconosciuto - ' + df_referees.index.astype(str)
+    
+    # 3. Sostituisci la media cartellini mancante con la media Serie A
+    mask_invalid_cards = df_referees['Gialli a partita'].isna()
+    df_referees.loc[mask_invalid_cards, 'Gialli a partita'] = SERIE_A_AVG_CARDS_PER_GAME
+    
+    # 4. Rimuovi i duplicati (solo per arbitri con nome e dati uguali)
+    df_referees.drop_duplicates(subset=['Nome', 'Gialli a partita'], inplace=True)
     # ========================================================
     
     # === SALVATAGGIO IN SESSION STATE SOLO DOPO IL CARICAMENTO ===
