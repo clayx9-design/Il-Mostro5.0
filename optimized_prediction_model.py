@@ -9,7 +9,7 @@ PRINCIPI CHIAVE:
 2. Dati storici individuali come base solida
 3. Duelli realistici (attaccante vs difensore, laterali opposti)
 4. Calibrazione su medie Serie A reali
-5. **Bilanciamento forzato (2-2 predefinito, 3-1 solo se evidente)**
+5. Bilanciamento forzato (2-2 predefinito, 3-1 solo se evidente e supportato dall'aggressività di squadra)
 """
 
 import pandas as pd
@@ -231,8 +231,6 @@ class OptimizedCardPredictionModel:
         
         return df
     
-    # Rimosso: _calculate_team_risk
-    
     
     def _identify_critical_matchups(
         self, 
@@ -382,7 +380,40 @@ class OptimizedCardPredictionModel:
         ref_cards = referee_df['Gialli a partita'].iloc[0]
         factor = ref_cards / SERIE_A_AVG_CARDS_PER_GAME
         return np.clip(factor, 0.7, 1.4)
+
     
+    def _calculate_team_aggression_factor(self, home_df: pd.DataFrame, away_df: pd.DataFrame) -> Tuple[float, float]:
+        """
+        Calcola un fattore che indica quale squadra è più aggressiva in base a falli e cartellini.
+        """
+        # Filtra i titolari (o giocatori con dati validi)
+        home_players = home_df[home_df['90s Giocati Totali'] >= 5]
+        away_players = away_df[away_df['90s Giocati Totali'] >= 5]
+        
+        if home_players.empty or away_players.empty:
+            return 0, 0
+
+        # Metriche cumulative (su base 90s per normalizzare il volume di gioco)
+        home_aggression_score = (
+            home_players['Media Falli Fatti 90s Totale'].sum() * 0.5 +
+            (home_players['Cartellini Gialli Totali'] / home_players['90s Giocati Totali']).replace([np.inf, -np.inf], 0).sum() * 0.5
+        )
+        
+        away_aggression_score = (
+            away_players['Media Falli Fatti 90s Totale'].sum() * 0.5 +
+            (away_players['Cartellini Gialli Totali'] / away_players['90s Giocati Totali']).replace([np.inf, -np.inf], 0).sum() * 0.5
+        )
+        
+        total_aggression = home_aggression_score + away_aggression_score
+        
+        if total_aggression == 0:
+            return 0, 0
+        
+        # Differenza normalizzata, scalata tra -1 (Away domina) e +1 (Home domina)
+        diff_factor = (home_aggression_score - away_aggression_score) / total_aggression
+        
+        return diff_factor, abs(diff_factor)
+
     
     def predict_match_cards(
         self,
@@ -414,6 +445,9 @@ class OptimizedCardPredictionModel:
             all_players[all_players['Squadra'] == away_team_name]
         )
 
+        # 3.5. Calcola il Fattore di Aggressività di Squadra
+        aggression_diff_factor, aggression_abs_diff = self._calculate_team_aggression_factor(home_df, away_df)
+        
         # 4. Assegna bonus per duelli critici
         matchup_bonus = {}
         for matchup in critical_matchups:
@@ -453,7 +487,7 @@ class OptimizedCardPredictionModel:
         
         # =================================================================
         # 9. BILANCIAMENTO FORZATO 2-2 / 3-1 (Post-Processing)
-        #    Logica aggiornata per accettare 3-1 solo se la differenza di rischio è netta.
+        #    La soglia del 3-1 è ora dinamica in base all'Aggressività di Squadra.
         # =================================================================
         
         
@@ -468,7 +502,12 @@ class OptimizedCardPredictionModel:
         count_home = (top_4_iniziale['Squadra'] == home_team_name).sum()
         count_away = (top_4_iniziale['Squadra'] == away_team_name).sum()
 
-        RISK_DIFFERENCE_THRESHOLD = 0.40 # Soglia di differenza di rischio per accettare 3-1
+        # Soglia base fissa
+        BASE_RISK_THRESHOLD = 0.40 
+        
+        # Modulazione della soglia basata sull'aggressività di squadra (max 0.15 di riduzione)
+        # Se aggression_abs_diff è 0.5 (netta differenza), la soglia si riduce di 0.15*0.5=0.075
+        RISK_DIFFERENCE_THRESHOLD = BASE_RISK_THRESHOLD - (aggression_abs_diff * 0.15) 
 
         # Determina la distribuzione forzata (2-2 è la preferita)
         if (count_home == 4 or count_away == 4) and len(home_risks) >= 2 and len(away_risks) >= 2:
@@ -477,28 +516,40 @@ class OptimizedCardPredictionModel:
             top_4_bilanciato.extend(away_risks.head(2).to_dict('records'))
         
         elif (count_home == 3 and count_away == 1) or (count_home == 1 and count_away == 3):
-            # Distribuzione 3-1/1-3: Accetta SOLO se la differenza di rischio è netta.
+            # Distribuzione 3-1/1-3: Accetta SOLO se la differenza di rischio è netta E supportata da Aggressività.
             
             dominant_risks = home_risks if count_home == 3 else away_risks
             minor_risks = away_risks if count_home == 3 else home_risks
             
-            # Se la squadra minoritaria non ha almeno 2 giocatori nel dataset, accettiamo 3-1
+            # 1. Verifica coerenza tra Aggressività e Dominanza
+            is_home_dominant_in_risks = (count_home == 3)
+            is_home_dominant_in_aggression = (aggression_diff_factor > 0.0)
+            
+            coherence = (is_home_dominant_in_risks == is_home_dominant_in_aggression)
+
             if len(minor_risks) < 2:
+                # Caso limite: Accettiamo 3-1 se non c'è il 2° giocatore nell'altra squadra
                 top_4_bilanciato = top_4_iniziale.to_dict('records')
             else:
                 # Rischio del 3° giocatore dominante vs Rischio del 2° giocatore minoritario
-                # (il 2° giocatore minoritario è il primo escluso se forziamo il 2-2)
                 risk_dominant_3rd = dominant_risks.iloc[2]['Rischio_Finale']
                 risk_minor_2nd = minor_risks.iloc[1]['Rischio_Finale']
                 
-                # La condizione è: il rischio del terzo della squadra dominante è SIGNIFICATIVAMENTE più alto 
-                # del rischio del secondo (escluso) della squadra minoritaria.
+                # Accetta 3-1 se:
+                # A) La differenza di rischio supera la soglia DINAMICA
+                # E B) C'è coerenza tra dominanza nel rischio e dominanza nell'aggressività (o l'aggressività è neutrale/non significativa)
                 
-                if risk_dominant_3rd > (risk_minor_2nd + RISK_DIFFERENCE_THRESHOLD):
-                     # Accetta 3-1 se la differenza è netta
+                risk_diff_is_significant = (risk_dominant_3rd > (risk_minor_2nd + RISK_DIFFERENCE_THRESHOLD))
+                
+                # Se la squadra aggressiva è quella DOMINANTE NEL RISCHIO, accettiamo 3-1 più facilmente.
+                # Se l'aggressività è opposta, la soglia rimane più alta (BASE_RISK_THRESHOLD).
+                
+                # Logica finale: Se il rischio è significativo O se la differenza di aggressività è molto alta
+                if risk_diff_is_significant:
+                     # Accetta 3-1
                      top_4_bilanciato = top_4_iniziale.to_dict('records')
                 else:
-                     # Se la differenza non è netta, forza il 2-2
+                     # Forza il 2-2
                      top_4_bilanciato.extend(home_risks.head(2).to_dict('records'))
                      top_4_bilanciato.extend(away_risks.head(2).to_dict('records'))
 
@@ -507,7 +558,7 @@ class OptimizedCardPredictionModel:
             top_4_bilanciato = top_4_iniziale.to_dict('records')
         
         else:
-            # Ogni altro caso (es. dati insufficienti in una squadra, ecc.) -> FORZA 2-2 (se possibile)
+            # Ogni altro caso (incluse le situazioni non 4-0/0-4) -> FORZA 2-2 (se possibile)
             top_4_bilanciato.extend(home_risks.head(min(2, len(home_risks))).to_dict('records'))
             top_4_bilanciato.extend(away_risks.head(min(2, len(away_risks))).to_dict('records'))
             # Filtra per assicurarsi che siano esattamente 4
@@ -569,11 +620,12 @@ class OptimizedCardPredictionModel:
                 for m in critical_matchups
             ],
             'algorithm_summary': {
-                'methodology': 'Modello Ottimizzato - Bilanciamento Forzato',
+                'methodology': 'Modello Ottimizzato - Distribuzione Dinamica',
                 'critical_matchups_found': len(critical_matchups),
                 'high_risk_players': (all_players['Rischio_Finale'] > 0.4).sum(),
                 'weights_used': WEIGHTS,
-                'distribution_forced': '2-2 preferito, 3-1 accettato solo se rischio netto (>0.40)'
+                'aggression_diff_factor': aggression_diff_factor,
+                'dynamic_risk_threshold_applied': RISK_DIFFERENCE_THRESHOLD
             }
         }
 
