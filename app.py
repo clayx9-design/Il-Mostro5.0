@@ -283,7 +283,7 @@ def display_starter_verification(high_risk_victims):
     
     excluded = []
     if not high_risk_victims:
-        st.info("✅ Nessun giocatore ad alto rischio identificato.")
+        st.info("✅ Nessuno giocatore ad alto rischio identificato.")
         return excluded
     
     home_victims = [p for p in high_risk_victims if p['Team_Type'] == 'Casa']
@@ -331,10 +331,73 @@ def display_starter_verification(high_risk_victims):
 # VISUALIZZAZIONI DINAMICHE
 # =========================================================================
 
+def apply_balancing_logic(predictions_df, home_team_name, away_team_name):
+    """
+    Applica la logica di bilanciamento 2-2/3-1 al DataFrame filtrato.
+    Questa logica è replicata dal modello (Sezione 9) per coerenza nello scorrimento.
+    """
+    home_risks = predictions_df[predictions_df['Squadra'] == home_team_name]
+    away_risks = predictions_df[predictions_df['Squadra'] == away_team_name]
+    
+    top_4_bilanciato = []
+    
+    top_4_iniziale = predictions_df.head(4)
+    count_home = (top_4_iniziale['Squadra'] == home_team_name).sum()
+    count_away = (top_4_iniziale['Squadra'] == away_team_name).sum()
+
+    RISK_DIFFERENCE_THRESHOLD = 0.40 # Deve corrispondere al valore nel modello
+
+    # Determina la distribuzione forzata (2-2 è la preferita)
+    if (count_home == 4 or count_away == 4) and len(home_risks) >= 2 and len(away_risks) >= 2:
+        # Se troppo sbilanciato (4-0/0-4) -> FORZA 2-2
+        top_4_bilanciato.extend(home_risks.head(2).to_dict('records'))
+        top_4_bilanciato.extend(away_risks.head(2).to_dict('records'))
+    
+    elif (count_home == 3 and count_away == 1) or (count_home == 1 and count_away == 3):
+        # Distribuzione 3-1/1-3: Accetta SOLO se la differenza di rischio è netta.
+        
+        dominant_risks = home_risks if count_home == 3 else away_risks
+        minor_risks = away_risks if count_home == 3 else home_risks
+        
+        if len(minor_risks) < 2:
+            # Caso limite: Accettiamo 3-1 se non c'è il 2° giocatore nell'altra squadra
+            top_4_bilanciato = top_4_iniziale.to_dict('records')
+        else:
+            # Rischio del 3° giocatore dominante vs Rischio del 2° giocatore minoritario
+            risk_dominant_3rd = dominant_risks.iloc[2]['Rischio_Finale']
+            risk_minor_2nd = minor_risks.iloc[1]['Rischio_Finale']
+            
+            if risk_dominant_3rd > (risk_minor_2nd + RISK_DIFFERENCE_THRESHOLD):
+                 # Accetta 3-1 se la differenza è netta
+                 top_4_bilanciato = top_4_iniziale.to_dict('records')
+            else:
+                 # Se la differenza non è netta, forza il 2-2
+                 top_4_bilanciato.extend(home_risks.head(2).to_dict('records'))
+                 top_4_bilanciato.extend(away_risks.head(2).to_dict('records'))
+
+    elif count_home == 2 and count_away == 2:
+        # Mantiene il 2-2 se è già presente
+        top_4_bilanciato = top_4_iniziale.to_dict('records')
+    
+    else:
+        # Ogni altro caso (es. dati insufficienti in una squadra, ecc.) -> FORZA 2-2 (se possibile)
+        top_4_bilanciato.extend(home_risks.head(min(2, len(home_risks))).to_dict('records'))
+        top_4_bilanciato.extend(away_risks.head(min(2, len(away_risks))).to_dict('records'))
+        # Filtra per assicurarsi che siano esattamente 4
+        top_4_bilanciato = sorted(top_4_bilanciato, key=lambda x: x['Rischio_Finale'], reverse=True)[:4]
+
+    # Riordina il TOP 4 bilanciato in base al Rischio_Finale
+    final_df = pd.DataFrame(top_4_bilanciato).sort_values(
+        'Rischio_Finale', ascending=False
+    )
+    
+    return final_df[['Player', 'Squadra', 'Rischio_Finale', 'Quota_Stimata', 'Zona_Campo', 'Ruolo']].to_dict('records')
+
+
 def display_dynamic_top_4():
     """
     Visualizza il TOP 4 con pulsanti di esclusione affiancati per lo scorrimento,
-    mostrando solo Rank, Giocatore, Squadra e Ruolo.
+    applicando la logica di bilanciamento anche dopo l'esclusione.
     """
     
     if 'result' not in st.session_state or st.session_state['result'] is None:
@@ -350,7 +413,7 @@ def display_dynamic_top_4():
         current_top_4 = result['top_4_predictions']
         
     st.markdown("## 🎯 TOP 4 PRONOSTICO CARTELLINI")
-    st.markdown("Clicca '❌ Escludi' per rimuovere un giocatore non titolare e far scorrere la graduatoria.")
+    st.markdown("Clicca '❌ Escludi' per rimuovere un giocatore non titolare e far scorrere la graduatoria, mantenendo la logica di bilanciamento 2-2/3-1.")
 
 
     if 'scrolled_exclusions' not in st.session_state:
@@ -405,20 +468,24 @@ def display_dynamic_top_4():
                     
                     excluded_players = st.session_state['scrolled_exclusions']
                     
+                    # DataFrame filtrato
                     new_top_predictions_df = all_predictions_df[
                         ~all_predictions_df['Player'].isin(excluded_players)
                     ]
                     
-                    new_top_4 = new_top_predictions_df.head(4)[
-                        ['Player', 'Squadra', 'Rischio_Finale', 'Quota_Stimata', 'Zona_Campo', 'Ruolo']
-                    ].to_dict('records')
+                    # APPLICA LA LOGICA DI BILANCIAMENTO AL TOP 4 FILTRATO
+                    new_top_4 = apply_balancing_logic(
+                        new_top_predictions_df, 
+                        st.session_state['home_team'], 
+                        st.session_state['away_team']
+                    )
 
                     st.session_state['scrolled_top_4'] = new_top_4
                     st.rerun() # Forza il ricaricamento
 
     # Messaggio di stato
     if st.session_state['scrolled_exclusions']:
-        st.warning(f"⚠️ **ATTENZIONE:** TOP 4 modificato per scorrimento. Esclusi (post-analisi): {', '.join(st.session_state['scrolled_exclusions'])}")
+        st.warning(f"⚠️ **ATTENZIONE:** TOP 4 modificato per scorrimento (logica bilanciata applicata). Esclusi (post-analisi): {', '.join(st.session_state['scrolled_exclusions'])}")
         if st.button("↩️ Ripristina TOP 4 Originale", key='reset_scrolling', type='primary'):
             if 'scrolled_top_4' in st.session_state:
                 del st.session_state['scrolled_top_4']
@@ -615,6 +682,10 @@ def main():
          st.session_state['scrolled_top_4'] = None
     if 'scrolled_exclusions' not in st.session_state:
          st.session_state['scrolled_exclusions'] = []
+    if 'home_team' not in st.session_state:
+         st.session_state['home_team'] = None
+    if 'away_team' not in st.session_state:
+         st.session_state['away_team'] = None
     # ===============================================
 
     st.markdown("""
