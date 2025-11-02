@@ -295,7 +295,8 @@ def get_fouls_suffered_metric(df):
 def identify_high_risk_victims(home_df, away_df):
     """
     Identifica i giocatori che SUBISCONO molti falli.
-    Logica modificata per garantire la rilevazione di forte incremento stagionale (Spread >= 1.0).
+    Logica potenziata per rilevare i casi di forte incremento stagionale (Spread >= 0.5)
+    E soglia standard abbassata a 1.5 Falli/90s.
     """
     all_victims = []
     
@@ -314,20 +315,21 @@ def identify_high_risk_victims(home_df, away_df):
             0
         )
         
-        # 1. Rilevazione Estrema (Override per forte incremento stagionale)
-        # Condizioni: Spread stagionale >= 1.0 E Minimo 2 partite (90s)
-        SPREAD_THRESHOLD_HIGH = 1.0
-        MIN_90S = 2.0 
+        # SOGLIE AGGIORNATE
+        SPREAD_THRESHOLD_HIGH = 0.5
+        MIN_FOULS_THRESHOLD = 1.5  # MODIFICA: La soglia standard è ora 1.5
+        MIN_90S = 2.0
+        MIN_SEASONAL_FOULS = 1.5
         
+        # 1. Rilevazione Estrema (Override per forte incremento stagionale)
         victims_forced = df_valid[
             (df_valid['Stagional_Spread'] >= SPREAD_THRESHOLD_HIGH) &
+            (df_valid['Falli_Subiti_Stagionale'] >= MIN_SEASONAL_FOULS) &
             (df_valid['90s Giocati Totali'] >= MIN_90S)
         ].copy()
         
         # 2. Rilevazione Standard (Soglia Assoluta)
-        # Rileva tutti i giocatori la cui media falli subiti è ALTA (>= 2.0 Falli/90s)
-        MIN_FOULS_THRESHOLD = 2.0
-        
+        # Include qualsiasi giocatore con una media di falli subiti alta (>= 1.5 Falli/90s)
         victims_standard = df_valid[df_valid['Falli_Subiti_Used'] >= MIN_FOULS_THRESHOLD].copy()
         
         # Combina le due liste (Standard + Forzata) e rimuovi duplicati
