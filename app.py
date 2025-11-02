@@ -297,12 +297,13 @@ def identify_high_risk_victims(home_df, away_df):
     Identifica i giocatori che SUBISCONO molti falli, dando un peso maggiore 
     a quelli la cui media stagionale è significativamente più alta della media totale.
     
-    Include una clausola di override per forzare l'inclusione di giocatori con NETTO BOOST STAGIONALE.
+    Include una clausola di override per forzare l'inclusione di giocatori con NETTO BOOST STAGIONALE (tipo Bonny).
     """
     all_victims = []
     
     for df, team_type in [(home_df, 'Casa'), (away_df, 'Trasferta')]:
         df = get_fouls_suffered_metric(df)
+        # Filtra i giocatori con dati giocati significativi
         df_valid = df[(df['Falli_Subiti_Used'] > 0) & (df['90s Giocati Totali'] >= 1)].copy()
         
         if df_valid.empty:
@@ -315,37 +316,41 @@ def identify_high_risk_victims(home_df, away_df):
             0
         )
         
-        # AUMENTATO IL MOLTIPLICATORE: Bonus se la media Stagionale è ALMENO 0.5 Falli/90s superiore alla Totale
+        # BONUS: Aumento del moltiplicatore
         BONUS_THRESHOLD = 0.5
         df_valid['Fouls_Bonus'] = np.where(
             df_valid['Stagional_Boost'] >= BONUS_THRESHOLD,
-            df_valid['Stagional_Boost'] * 2.0, # Moltiplicatore 2.0
+            df_valid['Stagional_Boost'] * 2.0, # Moltiplicatore 2.0 (amplificato)
             0
         )
         
         # Metrica di Ranking: Media Usata + Bonus Stagionale
         df_valid['Ranking_Metric'] = df_valid['Falli_Subiti_Used'] + df_valid['Fouls_Bonus']
 
-        # 1. Rilevazione Standard (Top 70%)
+        # 1. Rilevazione Standard (Top 70% in base al Ranking_Metric)
         threshold_suffered = df_valid['Ranking_Metric'].quantile(0.70)
         victims_standard = df_valid[df_valid['Ranking_Metric'] >= threshold_suffered].copy()
         
         # 2. Rilevazione Forzata (Override per Bonny-like cases)
-        # Condizioni: Stagionale molto alta (>= 2.5) E Netto Boost (>= 1.0) E Minimo 5 partite
+        # Condizioni MIGLIORATE per essere più inclusivi con l'incremento stagionale:
+        # a) Falli subiti stagionali alti (>= 2.0)
+        # b) Netto Boost rispetto alla media totale (>= 0.8)
+        # c) Minimo 5 partite giocate
         victims_forced = df_valid[
-            (df_valid['Falli_Subiti_Stagionale'] >= 2.5) &
-            (df_valid['Stagional_Boost'] >= 1.0) &
+            (df_valid['Falli_Subiti_Stagionale'] >= 2.0) & # Abbassata da 2.5 a 2.0
+            (df_valid['Stagional_Boost'] >= 0.8) &        # Abbassata da 1.0 a 0.8
             (df_valid['90s Giocati Totali'] >= 5)
         ].copy()
         
-        # Combina le due liste (rimuovendo duplicati impliciti)
+        # Combina le due liste (Standard + Forzata) e rimuovi duplicati
         all_victims_df = pd.concat([victims_standard, victims_forced]).drop_duplicates(subset=['Player'])
 
         # Processa i risultati combinati
         for _, player in all_victims_df.iterrows():
             
-            if player['Stagional_Boost'] >= 1.0 and player['Falli_Subiti_Stagionale'] >= 2.5:
-                risk_label = "🔥 Alto Rischio Stagionale (Override)"
+            # Etichettatura per l'interfaccia
+            if player['Stagional_Boost'] >= 0.8 and player['Falli_Subiti_Stagionale'] >= 2.0:
+                risk_label = "🔥 Alto Rischio Stagionale (Focalizzato)"
             elif player['Fouls_Bonus'] > 0:
                 risk_label = "🔥 Alto Rischio Stagionale"
             elif player['Falli_Subiti_Used'] > 2.0:
