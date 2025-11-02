@@ -267,7 +267,7 @@ def get_fouls_suffered_metric(df):
     # Inizializza le colonne per il calcolo della differenza
     df['Falli_Subiti_Totale'] = df.get(total_col, 0.0)
     df['Falli_Subiti_Stagionale'] = df.get(seasonal_col, 0.0)
-    df['90s Giocati Totali'] = df.get('90s Giocati Totali', 0.0) # Necessario per l'override
+    df['90s Giocati Totali'] = df.get('90s Giocati Totali', 0.0) 
     
     # Logica di base per 'Falli_Subiti_Used' (priorità a Totale)
     if has_total:
@@ -294,10 +294,8 @@ def get_fouls_suffered_metric(df):
 
 def identify_high_risk_victims(home_df, away_df):
     """
-    Identifica i giocatori che SUBISCONO molti falli, dando un peso maggiore 
-    a quelli la cui media stagionale è significativamente più alta della media totale.
-    
-    Include una clausola di override per forzare l'inclusione di giocatori con NETTO BOOST STAGIONALE (tipo Bonny).
+    Identifica i giocatori che SUBISCONO molti falli.
+    Logica potenziata per rilevare i casi di forte incremento stagionale (Spread/Differenza >= 0.5).
     """
     all_victims = []
     
@@ -309,38 +307,31 @@ def identify_high_risk_victims(home_df, away_df):
         if df_valid.empty:
             continue
             
-        # Calcola il Fattore di Incremento Stagionale
-        df_valid['Stagional_Boost'] = np.where(
-            (df_valid['Falli_Subiti_Stagionale'] > 0.5) & (df_valid['Falli_Subiti_Totale'] > 0.5),
+        # Calcola lo Spread Stagionale (la differenza diretta)
+        df_valid['Stagional_Spread'] = np.where(
+            (df_valid['Falli_Subiti_Stagionale'] > 0) & (df_valid['Falli_Subiti_Totale'] > 0),
             (df_valid['Falli_Subiti_Stagionale'] - df_valid['Falli_Subiti_Totale']),
             0
         )
         
-        # BONUS: Aumento del moltiplicatore
-        BONUS_THRESHOLD = 0.5
-        df_valid['Fouls_Bonus'] = np.where(
-            df_valid['Stagional_Boost'] >= BONUS_THRESHOLD,
-            df_valid['Stagional_Boost'] * 2.0, # Moltiplicatore 2.0 (amplificato)
-            0
-        )
+        # 1. Rilevazione Estrema (Override per forte incremento stagionale)
+        # CONDIZIONI AGGIORNATE: Spread >= 0.5 E Stagionale >= 1.5 E Minimo 2 partite (90s)
+        SPREAD_THRESHOLD = 0.5
+        MIN_SEASONAL_FOULS = 1.5
+        MIN_90S = 2.0 # MODIFICA: Portato a 2.0
         
-        # Metrica di Ranking: Media Usata + Bonus Stagionale
-        df_valid['Ranking_Metric'] = df_valid['Falli_Subiti_Used'] + df_valid['Fouls_Bonus']
-
-        # 1. Rilevazione Standard (Top 70% in base al Ranking_Metric)
+        victims_forced = df_valid[
+            (df_valid['Stagional_Spread'] >= SPREAD_THRESHOLD) &
+            (df_valid['Falli_Subiti_Stagionale'] >= MIN_SEASONAL_FOULS) &
+            (df_valid['90s Giocati Totali'] >= MIN_90S)
+        ].copy()
+        
+        # 2. Rilevazione Standard (Top 70% basato sulla media usata)
+        df_valid['Ranking_Metric'] = df_valid['Falli_Subiti_Used']
+        
+        # Soglia standard per giocatori con alta media totale
         threshold_suffered = df_valid['Ranking_Metric'].quantile(0.70)
         victims_standard = df_valid[df_valid['Ranking_Metric'] >= threshold_suffered].copy()
-        
-        # 2. Rilevazione Forzata (Override per Bonny-like cases)
-        # Condizioni MIGLIORATE per essere più inclusivi con l'incremento stagionale:
-        # a) Falli subiti stagionali alti (>= 2.0)
-        # b) Netto Boost rispetto alla media totale (>= 0.8)
-        # c) Minimo 5 partite giocate
-        victims_forced = df_valid[
-            (df_valid['Falli_Subiti_Stagionale'] >= 2.0) & # Abbassata da 2.5 a 2.0
-            (df_valid['Stagional_Boost'] >= 0.8) &        # Abbassata da 1.0 a 0.8
-            (df_valid['90s Giocati Totali'] >= 5)
-        ].copy()
         
         # Combina le due liste (Standard + Forzata) e rimuovi duplicati
         all_victims_df = pd.concat([victims_standard, victims_forced]).drop_duplicates(subset=['Player'])
@@ -348,15 +339,13 @@ def identify_high_risk_victims(home_df, away_df):
         # Processa i risultati combinati
         for _, player in all_victims_df.iterrows():
             
-            # Etichettatura per l'interfaccia
-            if player['Stagional_Boost'] >= 0.8 and player['Falli_Subiti_Stagionale'] >= 2.0:
-                risk_label = "🔥 Alto Rischio Stagionale (Focalizzato)"
-            elif player['Fouls_Bonus'] > 0:
-                risk_label = "🔥 Alto Rischio Stagionale"
-            elif player['Falli_Subiti_Used'] > 2.0:
-                risk_label = "🔴 Alto Rischio Storico"
+            # Etichettatura (pulita, solo per l'emoji)
+            if (player['Stagional_Spread'] >= SPREAD_THRESHOLD) and (player['Falli_Subiti_Stagionale'] >= MIN_SEASONAL_FOULS):
+                risk_label = "🔥 Stagionale"
+            elif player['Falli_Subiti_Used'] >= 2.0:
+                risk_label = "🔴 Alto"
             else:
-                risk_label = "🟡 Rischio Standard"
+                risk_label = "🟡 Standard"
 
             all_victims.append({
                 'Player': player['Player'],
@@ -366,23 +355,23 @@ def identify_high_risk_victims(home_df, away_df):
                 'Falli_Source': player['Falli_Subiti_Source'],
                 'Posizione': player.get('Posizione_Primaria', 'N/A'),
                 'Ruolo': player.get('Ruolo', 'N/A'),
-                'Ranking_Metric': player['Ranking_Metric'],
+                'Ranking_Metric': player['Falli_Subiti_Used'], 
                 'Risk_Label': risk_label
             })
             
-    # Ordina i risultati finali
-    all_victims.sort(key=lambda x: x['Ranking_Metric'], reverse=True)
+    # Ordina i risultati finali solo in base alla metrica Falli Subiti Usata
+    all_victims.sort(key=lambda x: x['Falli_Subiti_90'], reverse=True)
     
     return all_victims
 
 def display_starter_verification(high_risk_victims):
     """Mostra interfaccia verifica titolarità per FASE 1."""
     st.markdown("---")
-    st.markdown("### 🔍 FASE 1: Verifica Titolarità Giocatori che Subiscono Molti Falli")
+    st.markdown("### 🔍 FASE 1: Verifica Titolari")
     st.markdown("""
     <div class='verification-box'>
-        <h4>⚠️ Giocatori ad Alto Rischio di Subire Falli (Duelli Critici)</h4>
-        <p><strong>👉 Seleziona i giocatori NON TITOLARI</strong> per escluderli dall'analisi iniziale.</p>
+        <h4>⚠️ Giocatori che Subiscono Molti Falli</h4>
+        <p><strong>👉 Seleziona i giocatori NON TITOLARI</strong> per escluderli dall'analisi.</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -400,11 +389,11 @@ def display_starter_verification(high_risk_victims):
         if home_victims:
             st.markdown(f"#### 🏠 {home_victims[0]['Squadra']}")
             for player in home_victims:
-                risk_emoji = "🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Storico" in player['Risk_Label'] else "🟡")
+                risk_emoji = "🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Alto" in player['Risk_Label'] else "🟡")
                 
+                # PULIZIA: Solo Emoji, Nome e Ruolo. Rimossi i dati numerici.
                 is_excluded = st.checkbox(
-                    f"{risk_emoji} {player['Player']} ({player['Ruolo']}) - "
-                    f"**{player['Falli_Subiti_90']:.1f}** FS/90 - *{player['Risk_Label'].split(' ', 2)[2]}*",
+                    f"{risk_emoji} {player['Player']} ({player['Ruolo']})",
                     key=f"pre_home_{player['Player']}"
                 )
                 if is_excluded:
@@ -414,11 +403,11 @@ def display_starter_verification(high_risk_victims):
         if away_victims:
             st.markdown(f"#### ✈️ {away_victims[0]['Squadra']}")
             for player in away_victims:
-                risk_emoji = "🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Storico" in player['Risk_Label'] else "🟡")
+                risk_emoji = "🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Alto" in player['Risk_Label'] else "🟡")
                 
+                # PULIZIA: Solo Emoji, Nome e Ruolo. Rimossi i dati numerici.
                 is_excluded = st.checkbox(
-                    f"{risk_emoji} {player['Player']} ({player['Ruolo']}) - "
-                    f"**{player['Falli_Subiti_90']:.1f}** FS/90 - *{player['Risk_Label'].split(' ', 2)[2]}*",
+                    f"{risk_emoji} {player['Player']} ({player['Ruolo']})",
                     key=f"pre_away_{player['Player']}"
                 )
                 if is_excluded:
@@ -427,7 +416,7 @@ def display_starter_verification(high_risk_victims):
     st.markdown("---")
     
     if excluded:
-        st.warning(f"⚠️ **{len(excluded)} giocatori NON TITOLARI esclusi:** {', '.join(excluded)}")
+        st.warning(f"⚠️ **{len(excluded)} giocatori esclusi:** {', '.join(excluded)}")
         st.session_state['excluded_pre'] = excluded
     else:
         st.success("✅ Nessuna esclusione (FASE 1).")
@@ -549,7 +538,7 @@ def display_dynamic_top_4():
         # Sceglie la colonna in base all'indice
         with cols[(i-1) % 2]:
             
-            # Inizio Card HTML (Rimosso ogni riferimento al grassetto inutile e bilanciamento)
+            # Inizio Card HTML
             st.markdown(f"""
             <div class='player-card' style='border-left-color: {card_color};'>
                 <div class='player-details'>
@@ -718,7 +707,7 @@ def main_prediction_interface(df_players, df_referees):
         away_df_filtered = initial_away_df[~initial_away_df['Player'].isin(excluded_pre)]
         
         if excluded_pre:
-            st.info(f"🔧 **Analisi configurata:** {len(excluded_pre)} giocatori esclusi come non titolari (FASE 1).")
+            st.info(f"🔧 **Analisi configurata:** {len(excluded_pre)} giocatori esclusi (FASE 1).")
         
         # Pulsante elaborazione
         if st.button("🎯 Elabora Pronostico", type="primary", use_container_width=True):
