@@ -295,7 +295,7 @@ def get_fouls_suffered_metric(df):
 def identify_high_risk_victims(home_df, away_df):
     """
     Identifica i giocatori che SUBISCONO molti falli.
-    Logica potenziata per rilevare i casi di forte incremento stagionale (Spread/Differenza >= 0.5).
+    Logica modificata per garantire la rilevazione di forte incremento stagionale (Spread >= 1.0).
     """
     all_victims = []
     
@@ -315,23 +315,20 @@ def identify_high_risk_victims(home_df, away_df):
         )
         
         # 1. Rilevazione Estrema (Override per forte incremento stagionale)
-        # CONDIZIONI AGGIORNATE: Spread >= 0.5 E Stagionale >= 1.5 E Minimo 2 partite (90s)
-        SPREAD_THRESHOLD = 0.5
-        MIN_SEASONAL_FOULS = 1.5
-        MIN_90S = 2.0 # MODIFICA: Portato a 2.0
+        # Condizioni: Spread stagionale >= 1.0 E Minimo 2 partite (90s)
+        SPREAD_THRESHOLD_HIGH = 1.0
+        MIN_90S = 2.0 
         
         victims_forced = df_valid[
-            (df_valid['Stagional_Spread'] >= SPREAD_THRESHOLD) &
-            (df_valid['Falli_Subiti_Stagionale'] >= MIN_SEASONAL_FOULS) &
+            (df_valid['Stagional_Spread'] >= SPREAD_THRESHOLD_HIGH) &
             (df_valid['90s Giocati Totali'] >= MIN_90S)
         ].copy()
         
-        # 2. Rilevazione Standard (Top 70% basato sulla media usata)
-        df_valid['Ranking_Metric'] = df_valid['Falli_Subiti_Used']
+        # 2. Rilevazione Standard (Soglia Assoluta)
+        # Rileva tutti i giocatori la cui media falli subiti è ALTA (>= 2.0 Falli/90s)
+        MIN_FOULS_THRESHOLD = 2.0
         
-        # Soglia standard per giocatori con alta media totale
-        threshold_suffered = df_valid['Ranking_Metric'].quantile(0.70)
-        victims_standard = df_valid[df_valid['Ranking_Metric'] >= threshold_suffered].copy()
+        victims_standard = df_valid[df_valid['Falli_Subiti_Used'] >= MIN_FOULS_THRESHOLD].copy()
         
         # Combina le due liste (Standard + Forzata) e rimuovi duplicati
         all_victims_df = pd.concat([victims_standard, victims_forced]).drop_duplicates(subset=['Player'])
@@ -340,9 +337,9 @@ def identify_high_risk_victims(home_df, away_df):
         for _, player in all_victims_df.iterrows():
             
             # Etichettatura (pulita, solo per l'emoji)
-            if (player['Stagional_Spread'] >= SPREAD_THRESHOLD) and (player['Falli_Subiti_Stagionale'] >= MIN_SEASONAL_FOULS):
+            if player['Stagional_Spread'] >= SPREAD_THRESHOLD_HIGH:
                 risk_label = "🔥 Stagionale"
-            elif player['Falli_Subiti_Used'] >= 2.0:
+            elif player['Falli_Subiti_Used'] >= MIN_FOULS_THRESHOLD:
                 risk_label = "🔴 Alto"
             else:
                 risk_label = "🟡 Standard"
@@ -391,7 +388,7 @@ def display_starter_verification(high_risk_victims):
             for player in home_victims:
                 risk_emoji = "🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Alto" in player['Risk_Label'] else "🟡")
                 
-                # PULIZIA: Solo Emoji, Nome e Ruolo. Rimossi i dati numerici.
+                # PULIZIA: Solo Emoji, Nome e Ruolo.
                 is_excluded = st.checkbox(
                     f"{risk_emoji} {player['Player']} ({player['Ruolo']})",
                     key=f"pre_home_{player['Player']}"
@@ -405,7 +402,7 @@ def display_starter_verification(high_risk_victims):
             for player in away_victims:
                 risk_emoji = "🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Alto" in player['Risk_Label'] else "🟡")
                 
-                # PULIZIA: Solo Emoji, Nome e Ruolo. Rimossi i dati numerici.
+                # PULIZIA: Solo Emoji, Nome e Ruolo.
                 is_excluded = st.checkbox(
                     f"{risk_emoji} {player['Player']} ({player['Ruolo']})",
                     key=f"pre_away_{player['Player']}"
