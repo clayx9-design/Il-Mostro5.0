@@ -41,15 +41,18 @@ st.set_page_config(
 # =========================================================================
 st.markdown("""
 <style>
-    /* Intestazione principale */
+    /* Intestazione principale - Tonalità Giallo/Arancio (Cartellino) */
     .main-header {
-        background: linear-gradient(135deg, #1abc9c 0%, #16a085 100%);
+        background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);
         padding: 2rem;
         border-radius: 15px;
         text-align: center;
-        color: white;
+        color: #333; /* Testo scuro sul giallo */
         margin-bottom: 2rem;
         box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+    .main-header h1, .main-header p {
+        color: #333;
     }
 
     /* Stile per il TOP 4 Dinamico */
@@ -62,7 +65,7 @@ st.markdown("""
         margin: 0.8rem 0;
         box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         transition: transform 0.2s;
-        background-color: #f8f9fa; /* Sfondo chiaro per il container */
+        /* Sfondo basato sul rischio sarà gestito in Python con un colore dinamico */
     }
     .dynamic-top-prediction:hover {
         transform: translateY(-2px);
@@ -79,9 +82,9 @@ st.markdown("""
         text-align: center;
     }
 
-    /* Sezione Dati Partita */
+    /* Sezione Dati Partita - Tonalità Blu (Informazione) */
     .metric-box {
-        background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+        background: linear-gradient(135deg, #2196f3 0%, #1976d2 100%);
         padding: 1rem;
         border-radius: 10px;
         color: white;
@@ -93,6 +96,7 @@ st.markdown("""
         margin-top: 0;
         opacity: 0.8;
     }
+    /* Arbitro - Tonalità Viola */
     .referee-info {
         background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%);
         padding: 1.5rem;
@@ -102,12 +106,31 @@ st.markdown("""
         box-shadow: 0 4px 8px rgba(0,0,0,0.1);
     }
     /* Stile per pulsanti di esclusione */
-    button[kind="secondary"] {
-        background-color: #e74c3c;
+    .stButton>button {
+        background-color: #f44336; /* Rosso vivo per Escludi */
         color: white;
         border: none;
         padding: 0.5rem 1rem;
         border-radius: 5px;
+        font-weight: bold;
+    }
+    /* Contenitore del Giocatore nel TOP 4 */
+    .player-card {
+        border-left: 5px solid; /* Colore dinamico */
+        padding: 10px 15px;
+        margin-bottom: 10px;
+        border-radius: 8px;
+        background-color: #ffffff;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    .player-details {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+    }
+    .risk-data {
+        text-align: right;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -283,7 +306,7 @@ def display_starter_verification(high_risk_victims):
     
     excluded = []
     if not high_risk_victims:
-        st.info("✅ Nessuno giocatore ad alto rischio identificato.")
+        st.info("✅ Nessun giocatore ad alto rischio identificato.")
         return excluded
     
     home_victims = [p for p in high_risk_victims if p['Team_Type'] == 'Casa']
@@ -364,6 +387,7 @@ def apply_balancing_logic(predictions_df, home_team_name, away_team_name):
             top_4_bilanciato = top_4_iniziale.to_dict('records')
         else:
             # Rischio del 3° giocatore dominante vs Rischio del 2° giocatore minoritario
+            # (il 2° giocatore minoritario è il primo escluso se forziamo il 2-2)
             risk_dominant_3rd = dominant_risks.iloc[2]['Rischio_Finale']
             risk_minor_2nd = minor_risks.iloc[1]['Rischio_Finale']
             
@@ -394,6 +418,18 @@ def apply_balancing_logic(predictions_df, home_team_name, away_team_name):
     return final_df[['Player', 'Squadra', 'Rischio_Finale', 'Quota_Stimata', 'Zona_Campo', 'Ruolo']].to_dict('records')
 
 
+def get_risk_color(risk_score):
+    """Restituisce un colore basato sul rischio finale."""
+    if risk_score >= 0.70:
+        return "#f44336"  # Rosso
+    elif risk_score >= 0.55:
+        return "#ff9800"  # Arancio scuro
+    elif risk_score >= 0.40:
+        return "#ffc107"  # Giallo
+    else:
+        return "#4caf50"  # Verde (rischio basso)
+
+
 def display_dynamic_top_4():
     """
     Visualizza il TOP 4 con pulsanti di esclusione affiancati per lo scorrimento,
@@ -420,48 +456,50 @@ def display_dynamic_top_4():
         st.session_state['scrolled_exclusions'] = []
     
     st.markdown('<div style="margin-top: 10px;"></div>', unsafe_allow_html=True)
-
+    
+    # Contenitore principale per le card dei giocatori
+    cols = st.columns(2)
+    
     # Visualizza i giocatori attuali del TOP 4
     for i, prediction in enumerate(current_top_4, 1):
         player_name = prediction.get('Player', 'Sconosciuto')
         squadra = prediction.get('Squadra', 'N/A')
-        ruolo = prediction.get('Ruolo', 'N/A') # Recupera il ruolo
+        ruolo = prediction.get('Ruolo', 'N/A')
+        rischio = prediction.get('Rischio_Finale', 0.0)
+        quota = prediction.get('Quota_Stimata', 0.0)
         
-        # Colori del Rank
-        rank_color = ["#ffcc00", "#bdc3c7", "#cd7f32", "#e74c3c"][i-1] 
-
-        # Ridisegna le colonne per la nuova visualizzazione (solo 3 colonne)
-        cols = st.columns([0.8, 5, 2.5])
+        card_color = get_risk_color(rischio)
         
-        # 1. Rank & Esclusione
-        with cols[0]:
+        # Sceglie la colonna in base all'indice
+        with cols[(i-1) % 2]:
+            
             st.markdown(f"""
-            <div style='
-                display: flex; 
-                justify-content: center; 
-                align-items: center; 
-                height: 100%; 
-                font-size: 1.5em; 
-                font-weight: 900; 
-                color: {rank_color};'>
-                #{i}
-            </div>
+            <div class='player-card' style='border-left-color: {card_color};'>
+                <div class='player-details'>
+                    <div>
+                        <h4 style='color: #2c3e50; margin-bottom: 0px;'>
+                            <span style='font-size: 1.2em; font-weight: 900; color: {card_color}; margin-right: 5px;'>#{i}</span>
+                            **{player_name}** ({squadra})
+                        </h4>
+                        <p style='color: #666; font-size: 0.9em; margin-top: 5px;'>
+                            **Ruolo:** {ruolo} 
+                        </p>
+                    </div>
+                    <div class='risk-data'>
+                        <p style='font-size: 0.8em; margin: 0;'>Rischio: 
+                           <span style='font-weight: bold; color: {card_color};'>{rischio:.2f}</span>
+                        </p>
+                        <p style='font-size: 0.8em; margin: 0;'>Quota stimata: 
+                           <span style='font-weight: bold; color: #2196f3;'>{quota:.2f}</span>
+                        </p>
+                    </div>
+                </div>
+                <div style='text-align: right; margin-top: 10px;'>
             """, unsafe_allow_html=True)
 
-        # 2. Informazioni Giocatore (Nome, Squadra, Ruolo)
-        with cols[1]:
-             st.markdown(f"""
-             <div style='padding-left: 10px;'>
-                 <h4 style='color: #2c3e50; margin-bottom: 0px;'>**{player_name}** ({squadra})</h4>
-                 <p style='color: #666; font-size: 1.0em; margin-top: 0px;'>
-                 **Ruolo:** {ruolo} </p>
-             </div>
-             """, unsafe_allow_html=True)
-        
-        # 3. Pulsante Escludi (Più grande)
-        with cols[2]:
+            # Pulsante Escludi (dentro il blocco markdown per essere nella card)
             if player_name not in st.session_state['scrolled_exclusions']:
-                if st.button(f"❌ Escludi", key=f"exclude_btn_{player_name}", type="secondary", use_container_width=True):
+                if st.button(f"❌ Escludi {player_name.split()[0]}", key=f"exclude_btn_{player_name}", use_container_width=False):
                     
                     newly_excluded = player_name
                     st.session_state['scrolled_exclusions'].append(newly_excluded)
@@ -482,6 +520,9 @@ def display_dynamic_top_4():
 
                     st.session_state['scrolled_top_4'] = new_top_4
                     st.rerun() # Forza il ricaricamento
+
+            st.markdown("</div></div>", unsafe_allow_html=True)
+
 
     # Messaggio di stato
     if st.session_state['scrolled_exclusions']:
