@@ -1,6 +1,7 @@
 # =========================================================================
 # FUNZIONI GESTIONE TITOLARI (FASE 1) - LOGICA OTTIMIZZATA PER TREND STAGIONALI
 # =========================================================================
+# NOTA: Assicurati che numpy sia importato all'inizio del file: import numpy as np
 
 def get_fouls_suffered_metric(df):
     """
@@ -18,9 +19,9 @@ def get_fouls_suffered_metric(df):
     has_seasonal = seasonal_col in df.columns
     
     # Inizializza le colonne
-    df['Falli_Subiti_Totale'] = df.get(total_col, 0.0)
-    df['Falli_Subiti_Stagionale'] = df.get(seasonal_col, 0.0)
-    df['90s Giocati Totali'] = df.get('90s Giocati Totali', 0.0)
+    df['Falli_Subiti_Totale'] = pd.to_numeric(df.get(total_col, 0.0), errors='coerce').fillna(0.0)
+    df['Falli_Subiti_Stagionale'] = pd.to_numeric(df.get(seasonal_col, 0.0), errors='coerce').fillna(0.0)
+    df['90s Giocati Totali'] = pd.to_numeric(df.get('90s Giocati Totali', 0.0), errors='coerce').fillna(0.0)
     
     # Logica base per 'Falli_Subiti_Used' (priorità a Totale)
     if has_total:
@@ -29,20 +30,18 @@ def get_fouls_suffered_metric(df):
             # Se la media totale è zero o nulla, usa la stagionale
             mask_zero = (df['Falli_Subiti_Used'] == 0) | df['Falli_Subiti_Used'].isna()
             df.loc[mask_zero, 'Falli_Subiti_Used'] = df.loc[mask_zero, 'Falli_Subiti_Stagionale']
-            df['Falli_Subiti_Source'] = df.apply(
-                lambda row: 'Stagionale' if row['Falli_Subiti_Used'] > 0 and mask_zero[row.name] else 'Totale',
-                axis=1
-            )
+            df['Falli_Subiti_Source'] = 'Totale'
+            df.loc[mask_zero, 'Falli_Subiti_Source'] = 'Stagionale'
         else:
             df['Falli_Subiti_Source'] = 'Totale'
     elif has_seasonal:
         df['Falli_Subiti_Used'] = df['Falli_Subiti_Stagionale']
         df['Falli_Subiti_Source'] = 'Stagionale'
     else:
-        df['Falli_Subiti_Used'] = 0
+        df['Falli_Subiti_Used'] = 0.0
         df['Falli_Subiti_Source'] = 'N/A'
     
-    df['Falli_Subiti_Used'] = df['Falli_Subiti_Used'].fillna(0)
+    df['Falli_Subiti_Used'] = df['Falli_Subiti_Used'].fillna(0.0)
     
     return df
 
@@ -70,10 +69,11 @@ def identify_high_risk_victims(home_df, away_df):
         # ===================================================================
         # CALCOLO SPREAD STAGIONALE (la chiave per identificare trend)
         # ===================================================================
-        df_valid['Stagional_Spread'] = np.where(
-            (df_valid['Falli_Subiti_Stagionale'] > 0) & (df_valid['Falli_Subiti_Totale'] > 0),
-            (df_valid['Falli_Subiti_Stagionale'] - df_valid['Falli_Subiti_Totale']),
-            0
+        df_valid['Stagional_Spread'] = 0.0
+        mask_both_valid = (df_valid['Falli_Subiti_Stagionale'] > 0) & (df_valid['Falli_Subiti_Totale'] > 0)
+        df_valid.loc[mask_both_valid, 'Stagional_Spread'] = (
+            df_valid.loc[mask_both_valid, 'Falli_Subiti_Stagionale'] - 
+            df_valid.loc[mask_both_valid, 'Falli_Subiti_Totale']
         )
         
         # ===================================================================
@@ -117,7 +117,7 @@ def identify_high_risk_victims(home_df, away_df):
             victims_absolute,      # Priorità massima
             victims_seasonal_trend, # Priorità alta (trend)
             victims_standard       # Priorità standard
-        ]).drop_duplicates(subset=['Player'], keep='first')
+        ], ignore_index=False).drop_duplicates(subset=['Player'], keep='first')
         
         # ===================================================================
         # ELABORAZIONE FINALE E ETICHETTATURA
