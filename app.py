@@ -65,23 +65,8 @@ st.markdown("""
         margin: 0.8rem 0;
         box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         transition: transform 0.2s;
-        /* Sfondo basato sul rischio sarà gestito in Python con un colore dinamico */
     }
-    .dynamic-top-prediction:hover {
-        transform: translateY(-2px);
-    }
-    .dynamic-top-prediction h4, .dynamic-top-prediction p {
-        margin: 0;
-        font-weight: 600;
-    }
-    .top-rank {
-        font-size: 2.0em;
-        font-weight: 900;
-        color: #2c3e50;
-        width: 40px;
-        text-align: center;
-    }
-
+    
     /* Sezione Dati Partita - Tonalità Blu (Informazione) */
     .metric-box {
         background: linear-gradient(135deg, #2196f3 0%, #1976d2 100%);
@@ -105,7 +90,33 @@ st.markdown("""
         margin: 1rem 0;
         box-shadow: 0 4px 8px rgba(0,0,0,0.1);
     }
-    /* Stile per pulsanti di esclusione */
+
+    /* Contenitore del Giocatore nel TOP 4 (Card Nette e Semplici) */
+    .player-card {
+        border-left: 6px solid; /* Colore dinamico per il rischio */
+        padding: 15px 15px;
+        margin-bottom: 15px;
+        border-radius: 10px;
+        background-color: #f7f9fc; /* Sfondo leggermente grigio */
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1); /* Ombreggiatura netta */
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        transition: background-color 0.2s;
+    }
+    .player-card:hover {
+        background-color: #f0f3f7; /* Leggero hover */
+    }
+    .player-details h4 {
+        margin-bottom: 3px !important;
+        font-size: 1.1em;
+    }
+    .player-details p {
+        font-size: 0.9em;
+        color: #777;
+    }
+    
+    /* Stile per il pulsante 'Escludi' nella card */
     .stButton>button {
         background-color: #f44336; /* Rosso vivo per Escludi */
         color: white;
@@ -113,25 +124,12 @@ st.markdown("""
         padding: 0.5rem 1rem;
         border-radius: 5px;
         font-weight: bold;
+        transition: background-color 0.2s;
     }
-    /* Contenitore del Giocatore nel TOP 4 */
-    .player-card {
-        border-left: 5px solid; /* Colore dinamico */
-        padding: 10px 15px;
-        margin-bottom: 10px;
-        border-radius: 8px;
-        background-color: #ffffff;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    .stButton>button:hover {
+        background-color: #d32f2f;
     }
-    .player-details {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        width: 100%;
-    }
-    .risk-data {
-        text-align: right;
-    }
+    
 </style>
 """, unsafe_allow_html=True)
 
@@ -432,8 +430,7 @@ def get_risk_color(risk_score):
 
 def display_dynamic_top_4():
     """
-    Visualizza il TOP 4 con pulsanti di esclusione affiancati per lo scorrimento,
-    applicando la logica di bilanciamento anche dopo l'esclusione.
+    Visualizza il TOP 4 con la nuova grafica pulita e il pulsante Escludi integrato.
     """
     
     if 'result' not in st.session_state or st.session_state['result'] is None:
@@ -449,7 +446,7 @@ def display_dynamic_top_4():
         current_top_4 = result['top_4_predictions']
         
     st.markdown("## 🎯 TOP 4 PRONOSTICO CARTELLINI")
-    st.markdown("Clicca '❌ Escludi' per rimuovere un giocatore non titolare e far scorrere la graduatoria, mantenendo la logica di bilanciamento 2-2/3-1.")
+    st.markdown("Clicca sul pulsante '❌ Escludi' all'interno di ogni card per rimuovere un giocatore non titolare e far scorrere la graduatoria in modo bilanciato (2-2/3-1).")
 
 
     if 'scrolled_exclusions' not in st.session_state:
@@ -466,40 +463,31 @@ def display_dynamic_top_4():
         squadra = prediction.get('Squadra', 'N/A')
         ruolo = prediction.get('Ruolo', 'N/A')
         rischio = prediction.get('Rischio_Finale', 0.0)
-        quota = prediction.get('Quota_Stimata', 0.0)
         
         card_color = get_risk_color(rischio)
         
         # Sceglie la colonna in base all'indice
         with cols[(i-1) % 2]:
             
+            # Inizio Card HTML
             st.markdown(f"""
             <div class='player-card' style='border-left-color: {card_color};'>
                 <div class='player-details'>
                     <div>
-                        <h4 style='color: #2c3e50; margin-bottom: 0px;'>
+                        <h4 style='color: #2c3e50; margin-bottom: 3px !important;'>
                             <span style='font-size: 1.2em; font-weight: 900; color: {card_color}; margin-right: 5px;'>#{i}</span>
-                            **{player_name}** ({squadra})
-                        </h4>
-                        <p style='color: #666; font-size: 0.9em; margin-top: 5px;'>
-                            **Ruolo:** {ruolo} 
+                            **{player_name}** </h4>
+                        <p style='margin: 0;'>
+                            {squadra} • **Ruolo:** {ruolo} 
                         </p>
                     </div>
-                    <div class='risk-data'>
-                        <p style='font-size: 0.8em; margin: 0;'>Rischio: 
-                           <span style='font-weight: bold; color: {card_color};'>{rischio:.2f}</span>
-                        </p>
-                        <p style='font-size: 0.8em; margin: 0;'>Quota stimata: 
-                           <span style='font-weight: bold; color: #2196f3;'>{quota:.2f}</span>
-                        </p>
-                    </div>
-                </div>
-                <div style='text-align: right; margin-top: 10px;'>
+                    <div style='text-align: right;'>
             """, unsafe_allow_html=True)
 
             # Pulsante Escludi (dentro il blocco markdown per essere nella card)
             if player_name not in st.session_state['scrolled_exclusions']:
-                if st.button(f"❌ Escludi {player_name.split()[0]}", key=f"exclude_btn_{player_name}", use_container_width=False):
+                # Usa una chiave unica e breve per Streamlit
+                if st.button(f"❌ Escludi", key=f"exclude_btn_{player_name}", use_container_width=False):
                     
                     newly_excluded = player_name
                     st.session_state['scrolled_exclusions'].append(newly_excluded)
@@ -509,7 +497,7 @@ def display_dynamic_top_4():
                     # DataFrame filtrato
                     new_top_predictions_df = all_predictions_df[
                         ~all_predictions_df['Player'].isin(excluded_players)
-                    ]
+                    ].copy() # Assicura una copia per evitare SettingWithCopyWarning
                     
                     # APPLICA LA LOGICA DI BILANCIAMENTO AL TOP 4 FILTRATO
                     new_top_4 = apply_balancing_logic(
@@ -520,7 +508,11 @@ def display_dynamic_top_4():
 
                     st.session_state['scrolled_top_4'] = new_top_4
                     st.rerun() # Forza il ricaricamento
+            else:
+                 st.markdown("<span style='color: #f44336; font-weight: bold; font-size: 0.9em;'>ESCLUSO</span>", unsafe_allow_html=True)
 
+
+            # Fine Card HTML
             st.markdown("</div></div>", unsafe_allow_html=True)
 
 
