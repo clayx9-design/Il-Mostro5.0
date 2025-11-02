@@ -315,33 +315,39 @@ def identify_high_risk_victims(home_df, away_df):
             0
         )
         
-        # SOGLIE AGGIORNATE
+        # SOGLIE
         SPREAD_THRESHOLD_HIGH = 0.5
-        MIN_FOULS_THRESHOLD = 1.5  # MODIFICA: La soglia standard è ora 1.5
-        MIN_90S = 2.0
+        MIN_STANDARD_FOULS = 1.5
+        MIN_ABSOLUTE_FOULS = 2.0  # NUOVA SOGLIA ASSOLUTA
         MIN_SEASONAL_FOULS = 1.5
+        MIN_90S = 2.0
         
         # 1. Rilevazione Estrema (Override per forte incremento stagionale)
-        victims_forced = df_valid[
+        victims_forced_seasonal = df_valid[
             (df_valid['Stagional_Spread'] >= SPREAD_THRESHOLD_HIGH) &
             (df_valid['Falli_Subiti_Stagionale'] >= MIN_SEASONAL_FOULS) &
             (df_valid['90s Giocati Totali'] >= MIN_90S)
         ].copy()
         
-        # 2. Rilevazione Standard (Soglia Assoluta)
-        # Include qualsiasi giocatore con una media di falli subiti alta (>= 1.5 Falli/90s)
-        victims_standard = df_valid[df_valid['Falli_Subiti_Used'] >= MIN_FOULS_THRESHOLD].copy()
+        # 2. Rilevazione Standard (Soglia Abbassata a 1.5)
+        victims_standard = df_valid[df_valid['Falli_Subiti_Used'] >= MIN_STANDARD_FOULS].copy()
         
-        # Combina le due liste (Standard + Forzata) e rimuovi duplicati
-        all_victims_df = pd.concat([victims_standard, victims_forced]).drop_duplicates(subset=['Player'])
+        # 3. Rilevazione Assoluta (Override per Falli Subiti Altissimi, >= 2.0)
+        victims_absolute = df_valid[df_valid['Falli_Subiti_Used'] >= MIN_ABSOLUTE_FOULS].copy()
+
+        # Combina le tre liste e rimuovi duplicati
+        all_victims_df = pd.concat([victims_standard, victims_forced_seasonal, victims_absolute]).drop_duplicates(subset=['Player'])
+
 
         # Processa i risultati combinati
         for _, player in all_victims_df.iterrows():
             
             # Etichettatura (pulita, solo per l'emoji)
-            if player['Stagional_Spread'] >= SPREAD_THRESHOLD_HIGH:
+            if player['Falli_Subiti_Used'] >= MIN_ABSOLUTE_FOULS:
+                risk_label = "🔥 Assoluto"
+            elif player['Stagional_Spread'] >= SPREAD_THRESHOLD_HIGH:
                 risk_label = "🔥 Stagionale"
-            elif player['Falli_Subiti_Used'] >= MIN_FOULS_THRESHOLD:
+            elif player['Falli_Subiti_Used'] >= MIN_STANDARD_FOULS:
                 risk_label = "🔴 Alto"
             else:
                 risk_label = "🟡 Standard"
@@ -388,7 +394,8 @@ def display_starter_verification(high_risk_victims):
         if home_victims:
             st.markdown(f"#### 🏠 {home_victims[0]['Squadra']}")
             for player in home_victims:
-                risk_emoji = "🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Alto" in player['Risk_Label'] else "🟡")
+                # Modifiche etichetta per includere la distinzione Assoluta
+                risk_emoji = "🔥" if "Assoluto" in player['Risk_Label'] or "Stagionale" in player['Risk_Label'] else ("🔴" if "Alto" in player['Risk_Label'] else "🟡")
                 
                 # PULIZIA: Solo Emoji, Nome e Ruolo.
                 is_excluded = st.checkbox(
@@ -402,7 +409,8 @@ def display_starter_verification(high_risk_victims):
         if away_victims:
             st.markdown(f"#### ✈️ {away_victims[0]['Squadra']}")
             for player in away_victims:
-                risk_emoji = "🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Alto" in player['Risk_Label'] else "🟡")
+                # Modifiche etichetta per includere la distinzione Assoluta
+                risk_emoji = "🔥" if "Assoluto" in player['Risk_Label'] or "Stagionale" in player['Risk_Label'] else ("🔴" if "Alto" in player['Risk_Label'] else "🟡")
                 
                 # PULIZIA: Solo Emoji, Nome e Ruolo.
                 is_excluded = st.checkbox(
