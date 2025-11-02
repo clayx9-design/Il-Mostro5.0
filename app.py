@@ -267,6 +267,7 @@ def get_fouls_suffered_metric(df):
     # Inizializza le colonne per il calcolo della differenza
     df['Falli_Subiti_Totale'] = df.get(total_col, 0.0)
     df['Falli_Subiti_Stagionale'] = df.get(seasonal_col, 0.0)
+    df['90s Giocati Totali'] = df.get('90s Giocati Totali', 0.0) # Necessario per l'override
     
     # Logica di base per 'Falli_Subiti_Used' (priorità a Totale)
     if has_total:
@@ -295,51 +296,64 @@ def identify_high_risk_victims(home_df, away_df):
     """
     Identifica i giocatori che SUBISCONO molti falli, dando un peso maggiore 
     a quelli la cui media stagionale è significativamente più alta della media totale.
+    
+    Include una clausola di override per forzare l'inclusione di giocatori con NETTO BOOST STAGIONALE.
     """
-    high_risk_victims = []
+    all_victims = []
     
     for df, team_type in [(home_df, 'Casa'), (away_df, 'Trasferta')]:
         df = get_fouls_suffered_metric(df)
-        df_valid = df[df['Falli_Subiti_Used'] > 0].copy()
+        df_valid = df[(df['Falli_Subiti_Used'] > 0) & (df['90s Giocati Totali'] >= 1)].copy()
         
         if df_valid.empty:
             continue
             
         # Calcola il Fattore di Incremento Stagionale
-        # Differenza tra Stagionale e Totale, solo per i giocatori con entrambe le medie > 0
         df_valid['Stagional_Boost'] = np.where(
             (df_valid['Falli_Subiti_Stagionale'] > 0.5) & (df_valid['Falli_Subiti_Totale'] > 0.5),
             (df_valid['Falli_Subiti_Stagionale'] - df_valid['Falli_Subiti_Totale']),
             0
         )
         
-        # Applica un bonus se la media Stagionale è ALMENO 0.5 FALLI/90s superiore alla Totale
+        # AUMENTATO IL MOLTIPLICATORE: Bonus se la media Stagionale è ALMENO 0.5 Falli/90s superiore alla Totale
         BONUS_THRESHOLD = 0.5
         df_valid['Fouls_Bonus'] = np.where(
             df_valid['Stagional_Boost'] >= BONUS_THRESHOLD,
-            df_valid['Stagional_Boost'] * 1.5, # Moltiplica il boost per dargli peso
+            df_valid['Stagional_Boost'] * 2.0, # Moltiplicatore 2.0
             0
         )
         
         # Metrica di Ranking: Media Usata + Bonus Stagionale
         df_valid['Ranking_Metric'] = df_valid['Falli_Subiti_Used'] + df_valid['Fouls_Bonus']
 
-        # Seleziona i giocatori con Ranking_Metric alta (top 30%)
+        # 1. Rilevazione Standard (Top 70%)
         threshold_suffered = df_valid['Ranking_Metric'].quantile(0.70)
-        victims = df_valid[df_valid['Ranking_Metric'] >= threshold_suffered].copy()
-        victims = victims.sort_values('Ranking_Metric', ascending=False)
+        victims_standard = df_valid[df_valid['Ranking_Metric'] >= threshold_suffered].copy()
         
-        for _, player in victims.iterrows():
+        # 2. Rilevazione Forzata (Override per Bonny-like cases)
+        # Condizioni: Stagionale molto alta (>= 2.5) E Netto Boost (>= 1.0) E Minimo 5 partite
+        victims_forced = df_valid[
+            (df_valid['Falli_Subiti_Stagionale'] >= 2.5) &
+            (df_valid['Stagional_Boost'] >= 1.0) &
+            (df_valid['90s Giocati Totali'] >= 5)
+        ].copy()
+        
+        # Combina le due liste (rimuovendo duplicati impliciti)
+        all_victims_df = pd.concat([victims_standard, victims_forced]).drop_duplicates(subset=['Player'])
+
+        # Processa i risultati combinati
+        for _, player in all_victims_df.iterrows():
             
-            # Etichetta il giocatore se ha ricevuto il bonus stagionale
-            if player['Fouls_Bonus'] > 0:
+            if player['Stagional_Boost'] >= 1.0 and player['Falli_Subiti_Stagionale'] >= 2.5:
+                risk_label = "🔥 Alto Rischio Stagionale (Override)"
+            elif player['Fouls_Bonus'] > 0:
                 risk_label = "🔥 Alto Rischio Stagionale"
             elif player['Falli_Subiti_Used'] > 2.0:
                 risk_label = "🔴 Alto Rischio Storico"
             else:
                 risk_label = "🟡 Rischio Standard"
 
-            high_risk_victims.append({
+            all_victims.append({
                 'Player': player['Player'],
                 'Squadra': player['Squadra'],
                 'Team_Type': team_type,
@@ -352,9 +366,9 @@ def identify_high_risk_victims(home_df, away_df):
             })
             
     # Ordina i risultati finali
-    high_risk_victims.sort(key=lambda x: x['Ranking_Metric'], reverse=True)
+    all_victims.sort(key=lambda x: x['Ranking_Metric'], reverse=True)
     
-    return high_risk_victims
+    return all_victims
 
 def display_starter_verification(high_risk_victims):
     """Mostra interfaccia verifica titolarità per FASE 1."""
