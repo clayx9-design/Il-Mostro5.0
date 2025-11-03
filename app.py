@@ -173,34 +173,98 @@ def load_excel_data():
 
     data['players'] = pd.concat(team_dataframes, ignore_index=True)
     
-    # Carica arbitri
+    # =========================================================================
+    # CARICAMENTO MIGLIORATO ARBITRI
+    # =========================================================================
     default_referee_data = {
         'Nome': ['Doveri', 'Orsato', 'Mariani', 'Pairetto', 'Massa', 'Guida'],
         'Gialli a partita': [4.2, 3.8, 5.1, 4.5, 3.2, 4.8]
     }
+    
+    SERIE_A_AVG_CARDS = 4.2  # Media Serie A come fallback
 
     df_referees = None
     try:
         if REFEREE_SHEET_NAME in available_sheets:
+            # Leggi il foglio arbitri
             df_referees = pd.read_excel(xls, REFEREE_SHEET_NAME)
-    except Exception as e:
-        st.sidebar.warning(f"⚠️ Errore caricamento arbitri: {e}")
-
-    if df_referees is None or df_referees.empty:
-        df_referees = pd.DataFrame(default_referee_data)
-    else:
-        # Normalizza colonne
-        if 'Nome' not in df_referees.columns:
-            name_cols = [col for col in df_referees.columns if 'nome' in col.lower() or 'arbitro' in col.lower()]
-            if name_cols:
-                df_referees.rename(columns={name_cols[0]: 'Nome'}, inplace=True)
-        
-        if 'Gialli a partita' not in df_referees.columns:
-            card_cols = [col for col in df_referees.columns if 'gialli' in col.lower() and 'partita' in col.lower()]
-            if card_cols:
-                df_referees.rename(columns={card_cols[0]: 'Gialli a partita'}, inplace=True)
+            
+            # Debug: mostra le colonne disponibili
+            st.sidebar.info(f"📋 Colonne trovate nel foglio Arbitri: {list(df_referees.columns)}")
+            
+            # Identifica automaticamente la colonna del nome
+            nome_col = None
+            for col in df_referees.columns:
+                col_lower = str(col).lower().strip()
+                if any(keyword in col_lower for keyword in ['nome', 'arbitro', 'name', 'referee']):
+                    nome_col = col
+                    break
+            
+            # Identifica automaticamente la colonna dei gialli
+            gialli_col = None
+            for col in df_referees.columns:
+                col_lower = str(col).lower().strip()
+                if 'giall' in col_lower and 'partita' in col_lower:
+                    gialli_col = col
+                    break
+                elif 'card' in col_lower or 'yellow' in col_lower:
+                    gialli_col = col
+                    break
+            
+            # Se non trova le colonne, prova con la prima e seconda colonna
+            if nome_col is None and len(df_referees.columns) > 0:
+                nome_col = df_referees.columns[0]
+                st.sidebar.warning(f"⚠️ Colonna nome non trovata, uso: {nome_col}")
+            
+            if gialli_col is None and len(df_referees.columns) > 1:
+                gialli_col = df_referees.columns[1]
+                st.sidebar.warning(f"⚠️ Colonna gialli non trovata, uso: {gialli_col}")
+            
+            # Rinomina le colonne
+            if nome_col and gialli_col:
+                df_referees = df_referees[[nome_col, gialli_col]].copy()
+                df_referees.columns = ['Nome', 'Gialli a partita']
+                
+                # Pulizia dati
+                # 1. Converti la colonna Nome in stringa e rimuovi spazi
+                df_referees['Nome'] = df_referees['Nome'].astype(str).str.strip()
+                
+                # 2. Rimuovi righe con nome vuoto, NaN o 'nan'
+                df_referees = df_referees[
+                    (df_referees['Nome'].notna()) & 
+                    (df_referees['Nome'] != '') & 
+                    (df_referees['Nome'] != 'nan') &
+                    (df_referees['Nome'].str.lower() != 'unnamed')
+                ]
+                
+                # 3. Converti la colonna Gialli in numerico
+                df_referees['Gialli a partita'] = pd.to_numeric(
+                    df_referees['Gialli a partita'], 
+                    errors='coerce'
+                )
+                
+                # 4. Sostituisci valori NaN con la media Serie A
+                df_referees['Gialli a partita'].fillna(SERIE_A_AVG_CARDS, inplace=True)
+                
+                # 5. Rimuovi duplicati
+                df_referees.drop_duplicates(subset=['Nome'], keep='first', inplace=True)
+                
+                # 6. Reset dell'indice
+                df_referees.reset_index(drop=True, inplace=True)
+                
+                st.sidebar.success(f"✅ Caricati {len(df_referees)} arbitri dal foglio Excel")
             else:
+                st.sidebar.error("❌ Impossibile identificare le colonne Nome e Gialli")
                 df_referees = pd.DataFrame(default_referee_data)
+                
+    except Exception as e:
+        st.sidebar.error(f"⚠️ Errore caricamento arbitri: {e}")
+        df_referees = None
+
+    # Se il caricamento è fallito, usa i dati di default
+    if df_referees is None or df_referees.empty:
+        st.sidebar.warning("⚠️ Uso dati arbitri di default")
+        df_referees = pd.DataFrame(default_referee_data)
 
     data['referees'] = df_referees
     data = preprocess_data(data)
@@ -217,7 +281,7 @@ def preprocess_data(data):
         'Cartellini Gialli Totali', 'Media Falli per Cartellino Totale',
         'Media 90s per Cartellino Totale', 'Ritardo Cartellino (Minuti)',
         'Minuti Giocati Totali', '90s Giocati Totali', 
-        'Media Falli Subiti 90s Stagionale' # Includi la stagionale per calcoli
+        'Media Falli Subiti 90s Stagionale'
     ]
     
     for col in numeric_columns:
@@ -243,7 +307,7 @@ def preprocess_data(data):
             from optimized_prediction_model import get_player_role as get_role
             df_players['Ruolo'] = df_players['Posizione_Primaria'].apply(get_role)
          except ImportError:
-            df_players['Ruolo'] = 'MF' # Fallback
+            df_players['Ruolo'] = 'MF'
             
     df_players['Posizione_Primaria'] = df_players['Posizione_Primaria'].astype(str).str.strip().str.upper()
     
@@ -532,7 +596,6 @@ def display_dynamic_top_4():
     st.markdown("## 🎯 TOP 4 PRONOSTICO CARTELLINI")
     st.markdown("Clicca sul pulsante '❌ Escludi' all'interno di ogni card per rimuovere un giocatore non titolare e far scorrere la graduatoria in modo ottimizzato.")
 
-
     if 'scrolled_exclusions' not in st.session_state:
         st.session_state['scrolled_exclusions'] = []
     
@@ -602,7 +665,6 @@ def display_dynamic_top_4():
 
     # Messaggio di stato
     if st.session_state['scrolled_exclusions']:
-        # Rimosso il riferimento esplicito a "logica bilanciata"
         st.warning(f"⚠️ **ATTENZIONE:** TOP 4 modificato per scorrimento (distribuzione ottimizzata applicata). Esclusi (post-analisi): {', '.join(st.session_state['scrolled_exclusions'])}")
         if st.button("↩️ Ripristina TOP 4 Originale", key='reset_scrolling', type='primary'):
             if 'scrolled_top_4' in st.session_state:
@@ -679,7 +741,6 @@ def main_prediction_interface(df_players, df_referees):
     st.markdown("## 🚀 Sistema Avanzato Predizione Cartellini")
     
     # Selezione squadre e arbitro
-    # Estraiamo gli arbitri unici per il menu a tendina
     all_referees = sorted(df_referees['Nome'].unique())
     all_teams = sorted(df_players['Squadra'].unique())
     
@@ -692,7 +753,6 @@ def main_prediction_interface(df_players, df_referees):
         away_team = st.selectbox("✈️ Squadra Trasferta", ['Seleziona...'] + all_teams, key='away')
     
     with col3:
-        # Usiamo l'elenco completo e pulito degli arbitri
         referee = st.selectbox("⚖️ Arbitro", ['Seleziona...'] + all_referees, key='ref')
     
     if home_team == away_team and home_team != 'Seleziona...':
@@ -754,12 +814,12 @@ def main_prediction_interface(df_players, df_referees):
         # Mostra risultati se disponibili
         if st.session_state['result'] is not None:
             
-            # TOP 4 VISUALIZZAZIONE DINAMICA (Semplificata)
+            # TOP 4 VISUALIZZAZIONE DINAMICA
             display_dynamic_top_4()
             
             st.markdown("---")
             
-            # Il resto delle analisi usa l'ultimo risultato completo (originale o ricalcolato)
+            # Il resto delle analisi usa l'ultimo risultato completo
             result = st.session_state.get('recalculated_result', st.session_state['result'])
             
             # Analisi partita
@@ -772,7 +832,7 @@ def main_prediction_interface(df_players, df_referees):
             
             st.markdown("---")
             
-            # Download (sempre dalla graduatoria completa originale/ricalcolata)
+            # Download
             csv_data = result['all_predictions'].to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="📥 Scarica Predizioni Complete (CSV)",
@@ -806,7 +866,6 @@ def main():
          st.session_state['home_team'] = None
     if 'away_team' not in st.session_state:
          st.session_state['away_team'] = None
-    # ===============================================
 
     st.markdown("""
     <div class='main-header'>
@@ -827,35 +886,18 @@ def main():
     
     df_players = data['players']
     df_referees = data['referees']
-
-    # === PULIZIA MODIFICATA PER INCLUDERE RIGHE VUOTE/NON VALIDATE ===
-    
-    # La media Serie A per i cartellini (fallback)
-    SERIE_A_AVG_CARDS_PER_GAME = 4.2 
-    
-    # 1. Rimuovi spazi bianchi (leading/trailing)
-    df_referees['Nome'] = df_referees['Nome'].astype(str).str.strip()
-    
-    # 2. Sostituisci i valori mancanti (NaN o stringa 'nan') con placeholder
-    mask_invalid_name = (df_referees['Nome'].isna()) | (df_referees['Nome'] == 'nan') | (df_referees['Nome'] == '')
-    # Assegniamo un nome univoco al placeholder per non fondere accidentalmente le righe incomplete
-    df_referees.loc[mask_invalid_name, 'Nome'] = 'Arbitro Sconosciuto - ' + df_referees.index.astype(str)
-    
-    # 3. Sostituisci la media cartellini mancante con la media Serie A
-    mask_invalid_cards = df_referees['Gialli a partita'].isna()
-    df_referees.loc[mask_invalid_cards, 'Gialli a partita'] = SERIE_A_AVG_CARDS_PER_GAME
-    
-    # 4. Rimuovi i duplicati (solo per arbitri con nome e dati uguali)
-    df_referees.drop_duplicates(subset=['Nome', 'Gialli a partita'], inplace=True)
-    # ========================================================
     
     # === SALVATAGGIO IN SESSION STATE SOLO DOPO IL CARICAMENTO ===
     if st.session_state['full_df_players'] is None:
         st.session_state['full_df_players'] = df_players
-    # =========================================================================
     
-    # Aggiorna il conteggio degli arbitri nel messaggio di successo
-    st.sidebar.success(f"✅ Dati caricati: {len(df_players)} giocatori, {len(df_referees['Nome'].unique())} arbitri")
+    # Mostra statistiche nel sidebar
+    st.sidebar.success(f"✅ Dati caricati: {len(df_players)} giocatori, {len(df_referees)} arbitri")
+    
+    # Debug: mostra lista arbitri nella sidebar
+    with st.sidebar.expander("📋 Lista Arbitri Caricati"):
+        for idx, ref in df_referees.iterrows():
+            st.write(f"• {ref['Nome']} - {ref['Gialli a partita']:.2f} gialli/partita")
     
     main_prediction_interface(df_players, df_referees)
 
