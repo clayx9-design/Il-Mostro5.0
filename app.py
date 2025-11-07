@@ -463,6 +463,7 @@ def apply_balancing_logic(all_predictions_df, home_team, away_team):
     count_away = len(away_risks)
     
     top_4_ottimizzato = []
+    top_4_iniziale = pd.concat([home_risks, away_risks]).head(4)
     
     if count_home >= 4 or count_away >= 4:
         # Se una squadra ha 4+, usa i primi 4 di quella e 0 dell'altra
@@ -473,7 +474,6 @@ def apply_balancing_logic(all_predictions_df, home_team, away_team):
     
     elif (count_home == 3 and count_away >= 1) or (count_away == 3 and count_home >= 1):
         # 3-1: Verifica se la differenza giustifica lo sbilanciamento
-        top_4_iniziale = pd.concat([home_risks, away_risks]).head(4)
         top_4_ottimizzato = top_4_iniziale.to_dict('records')
         
         # Controlla se forzare 2-2
@@ -502,6 +502,7 @@ def apply_balancing_logic(all_predictions_df, home_team, away_team):
                  top_4_ottimizzato = top_4_iniziale.to_dict('records')
             else:
                  # Se la differenza non è netta, forza il 2-2
+                 top_4_ottimizzato = []
                  top_4_ottimizzato.extend(home_risks.head(2).to_dict('records'))
                  top_4_ottimizzato.extend(away_risks.head(2).to_dict('records'))
 
@@ -511,6 +512,7 @@ def apply_balancing_logic(all_predictions_df, home_team, away_team):
     
     else:
         # Ogni altro caso -> FORZA 2-2 (se possibile)
+        top_4_ottimizzato = []
         top_4_ottimizzato.extend(home_risks.head(min(2, len(home_risks))).to_dict('records'))
         top_4_ottimizzato.extend(away_risks.head(min(2, len(away_risks))).to_dict('records'))
         top_4_ottimizzato = sorted(top_4_ottimizzato, key=lambda x: x['Rischio_Finale'], reverse=True)[:4]
@@ -520,7 +522,7 @@ def apply_balancing_logic(all_predictions_df, home_team, away_team):
         'Rischio_Finale', ascending=False
     )
     
-    return final_df[['Player', 'Squadra', 'Rischio_Finale', 'Quota_Stimata', 'Zona_Campo', 'Ruolo']].to_dict('records')
+    return final_df[['Player', 'Squadra', 'Rischio_Finale', 'Ruolo']].to_dict('records')  # Aggiustato: rimuovi colonne non esistenti
 
 
 def get_risk_color(risk_score):
@@ -568,7 +570,7 @@ def display_dynamic_top_4():
         player_name = prediction.get('Player', 'Sconosciuto')
         squadra = prediction.get('Squadra', 'N/A')
         ruolo = prediction.get('Ruolo', 'N/A')
-        rischio = prediction.get('Rischio_Finale', 0.0)
+        rischio = prediction.get('Rischio', 0.0)  # Nota: nel modello è 'Rischio', non 'Rischio_Finale'
         
         card_color = get_risk_color(rischio)
         
@@ -746,4 +748,122 @@ def main_prediction_interface(df_players, df_referees):
         away_df_filtered = initial_away_df[~initial_away_df['Player'].isin(excluded_pre)]
         
         if excluded_pre:
-            st.info(f"🔧 **Analisi configurata:** {len(excluded_pre)} giocatori esclusi (FA
+            st.info(f"🔧 **Analisi configurata:** {len(excluded_pre)} giocatori esclusi (FASE 1).")
+        
+        # Pulsante elaborazione
+        if st.button("🎯 Elabora Pronostico", type="primary", use_container_width=True):
+            with st.spinner("🔄 Analisi in corso... Elaborazione algoritmo avanzato..."):
+                try:
+                    model = SuperAdvancedCardPredictionModel()
+                    result = model.predict_match_cards(home_df_filtered, away_df_filtered, ref_df, high_risk_victims_filtered)  # NOVITÀ: Passa victims
+                    
+                    st.success("✅ Analisi completata! Usa i pulsanti '❌ Escludi' per lo scorrimento del TOP 4.")
+                    
+                    st.session_state['result'] = result
+                    st.session_state['home_team'] = home_team
+                    st.session_state['away_team'] = away_team
+                    st.session_state['referee'] = referee
+                    
+                    # Resetta ricalcolo e scorrimento al risultato iniziale
+                    st.session_state['recalculated_result'] = result
+                    if 'scrolled_top_4' in st.session_state:
+                         del st.session_state['scrolled_top_4']
+                    if 'scrolled_exclusions' in st.session_state:
+                         del st.session_state['scrolled_exclusions']
+                    
+                except Exception as e:
+                    st.error(f"❌ Errore: {str(e)}")
+                    return
+        
+        # Mostra risultati se disponibili
+        if st.session_state['result'] is not None:
+            
+            # TOP 4 VISUALIZZAZIONE DINAMICA
+            display_dynamic_top_4()
+            
+            st.markdown("---")
+            
+            # Il resto delle analisi usa l'ultimo risultato completo
+            result = st.session_state.get('recalculated_result', st.session_state['result'])
+            
+            # Analisi partita
+            display_match_analysis(result)
+            
+            st.markdown("---")
+            
+            # Arbitro
+            display_referee_analysis(result['referee_profile'])
+            
+            st.markdown("---")
+            
+            # Download
+            csv_data = result['all_predictions'].to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Scarica Predizioni Complete (CSV)",
+                data=csv_data,
+                file_name=f"predizioni_{home_team}_vs_{away_team}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv"
+            )
+    
+    else:
+        st.info("👆 Seleziona squadre casa, trasferta e arbitro per iniziare.")
+
+# =========================================================================
+# MAIN
+# =========================================================================
+def main():
+    
+    # === INIZIALIZZAZIONE SESSION STATE ROBUSTA ===
+    if 'full_df_players' not in st.session_state:
+        st.session_state['full_df_players'] = None
+    if 'excluded_pre' not in st.session_state:
+         st.session_state['excluded_pre'] = []
+    if 'result' not in st.session_state:
+         st.session_state['result'] = None
+    if 'recalculated_result' not in st.session_state:
+         st.session_state['recalculated_result'] = None
+    if 'scrolled_top_4' not in st.session_state:
+         st.session_state['scrolled_top_4'] = None
+    if 'scrolled_exclusions' not in st.session_state:
+         st.session_state['scrolled_exclusions'] = []
+    if 'home_team' not in st.session_state:
+         st.session_state['home_team'] = None
+    if 'away_team' not in st.session_state:
+         st.session_state['away_team'] = None
+
+    st.markdown("""
+    <div class='main-header'>
+        <h1>⚽ Il Mostro 5.0 - Sistema Predizione Cartellini</h1>
+        <p>Algoritmo ottimizzato per predire i 4 giocatori più probabili da ammonire</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if not MODEL_LOADED:
+        return
+    
+    with st.spinner("📊 Caricamento dati..."):
+        data = load_excel_data()
+    
+    if data is None:
+        st.error("❌ Impossibile caricare i dati. Verifica che il file 'Il Mostro 5.0.xlsx' sia presente.")
+        return
+    
+    df_players = data['players']
+    df_referees = data['referees']
+    
+    # === SALVATAGGIO IN SESSION STATE SOLO DOPO IL CARICAMENTO ===
+    if st.session_state['full_df_players'] is None:
+        st.session_state['full_df_players'] = df_players
+    
+    # Mostra statistiche nel sidebar
+    st.sidebar.success(f"✅ Dati caricati: {len(df_players)} giocatori, {len(df_referees)} arbitri")
+    
+    # Debug: mostra lista arbitri nella sidebar
+    with st.sidebar.expander("📋 Lista Arbitri Caricati"):
+        for idx, ref in df_referees.iterrows():
+            st.write(f"• {ref['Nome']} - {ref['Gialli a partita']:.2f} gialli/partita")
+    
+    main_prediction_interface(df_players, df_referees)
+
+if __name__ == '__main__':
+    main()
