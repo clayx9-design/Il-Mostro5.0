@@ -1,4 +1,3 @@
-"""
 MODELLO OTTIMIZZATO PER PREDIZIONE CARTELLINI
 ==============================================
 Sistema semplificato, efficace e realistico per predire i 4 giocatori
@@ -232,6 +231,34 @@ class OptimizedCardPredictionModel:
         return df
     
     
+    def _calculate_player_aggression_factor(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        NUOVO: Calcola un fattore combinato di aggressività (Falli Fatti) e
+        l'essere bersaglio di gioco falloso (Falli Subiti).
+        Questo fattore viene forzato a 1.5 come richiesto dall'utente.
+        """
+        df = df.copy()
+
+        # Componente Falli Fatti (aggressività attiva)
+        # Normalizzata rispetto alla media Serie A (1.8)
+        foul_made_risk = df['Media Falli Fatti 90s Totale'] / SERIE_A_AVG_FOULS_PER_PLAYER
+        
+        # Componente Falli Subiti (aggressività passiva/rischio di essere bersaglio)
+        # Normalizzata rispetto a una media Falli Subiti Serie A (stimata 1.5 per bilanciamento)
+        foul_suffered_risk = df['Media Falli Subiti 90s Totale'] / 1.5
+
+        # Media armonica pesata dei due rischi
+        # Un giocatore aggressivo (alto foul_made) o un giocatore che subisce molti falli (alto foul_suffered)
+        # avrà un punteggio alto.
+        combined_risk_factor = (foul_made_risk * 0.6 + foul_suffered_risk * 0.4)
+        
+        # *** MODIFICA RICHIESTA UTENTE: Imposta un fattore minimo di 1.5 per i falli subiti/aggressività ***
+        # Questo garantisce che questo fattore non scenda sotto 1.5
+        df['Aggression_Factor_Min_1_5'] = np.maximum(1.5, combined_risk_factor)
+        
+        return df
+    
+    
     def _identify_critical_matchups(
         self, 
         home_df: pd.DataFrame, 
@@ -435,6 +462,8 @@ class OptimizedCardPredictionModel:
         all_players = self._calculate_historical_risk(all_players)
         all_players = self._calculate_foul_aggression(all_players)
         all_players = self._calculate_positional_risk(all_players)
+        # NUOVO: Calcola e applica il fattore Aggression_Factor_Min_1_5
+        all_players = self._calculate_player_aggression_factor(all_players)
         
         # 3. Identifica duelli critici
         home_team_name = home_df['Squadra'].iloc[0]
@@ -465,13 +494,21 @@ class OptimizedCardPredictionModel:
         # 5. Calcola fattore arbitro
         referee_factor = self._calculate_referee_factor(referee_df)
         
-        # 6. CALCOLA RISCHIO FINALE (Rimosso Team_Risk_Factor)
-        all_players['Rischio_Finale'] = (
+        # 6. CALCOLA RISCHIO FINALE (Applica il moltiplicatore Aggression_Factor_Min_1_5)
+        
+        base_risk = (
             all_players['Historical_Risk'] * self.weights['historical_tendency'] +
             all_players['Foul_Aggression'] * self.weights['foul_aggression'] +
             all_players['Matchup_Bonus'] * self.weights['critical_matchup'] +
             all_players['Positional_Risk'] * self.weights['positional_risk']
-        ) * (referee_factor ** self.weights['referee_factor'])
+        )
+        
+        # Applica l'Aggression_Factor_Min_1_5 come MOLTIPLICATORE sul rischio base
+        # Questo garantisce che l'impatto dei falli sia sempre amplificato.
+        all_players['Rischio_Finale'] = base_risk * all_players['Aggression_Factor_Min_1_5']
+        
+        # Applica il fattore arbitro
+        all_players['Rischio_Finale'] = all_players['Rischio_Finale'] * (referee_factor ** self.weights['referee_factor'])
         
         all_players['Rischio_Finale'] = np.clip(all_players['Rischio_Finale'], 0.01, 0.95)
         
