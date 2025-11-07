@@ -367,13 +367,14 @@ def get_fouls_suffered_metric(df):
 def identify_high_risk_victims(home_df, away_df):
     """
     Identifica i giocatori che SUBISCONO molti falli, includendo gli attaccanti chiave.
+    VERSIONE 5.1: Soglie più strict per ridurre il numero (focus su alto rischio reale).
     """
     all_victims = []
     
     for df, team_type in [(home_df, 'Casa'), (away_df, 'Trasferta')]:
         df = get_fouls_suffered_metric(df)
         
-        # Filtra i giocatori con dati giocati significativi
+        # Filtra i giocatori con dati giocati significativi (≥1 90s)
         df_valid = df[(df['Falli_Subiti_Used'] > 0) & (df['90s Giocati Totali'] >= 1)].copy()
         
         if df_valid.empty:
@@ -386,12 +387,12 @@ def identify_high_risk_victims(home_df, away_df):
             0
         )
         
-        # SOGLIE
-        SPREAD_THRESHOLD_HIGH = 0.5
-        MIN_FOULS_STANDARD = 1.5
-        MIN_90S_ACTIVE = 2.0
-        MIN_90S_TOP_PLAYER = 5.0 
-        MIN_SEASONAL_FOULS = 1.5
+        # SOGLIE AGGIORNATE (più strict)
+        SPREAD_THRESHOLD_HIGH = 0.5  # Invariato (incremento stagionale forte)
+        MIN_FOULS_STANDARD = 2.0     # Aumentato da 1.5: Solo alto rischio
+        MIN_90S_ACTIVE = 3.0         # Aumentato da 2.0: Più esperienza
+        MIN_90S_TOP_PLAYER = 5.0     # Invariato
+        MIN_SEASONAL_FOULS = 2.0     # Aumentato da 1.5
         
         # 1. Rilevazione Estrema (Forte incremento stagionale)
         victims_forced_seasonal = df_valid[
@@ -400,132 +401,90 @@ def identify_high_risk_victims(home_df, away_df):
             (df_valid['90s Giocati Totali'] >= MIN_90S_ACTIVE)
         ].copy()
         
-        # 2. Rilevazione Standard (Media Falli Subiti Alta, >= 1.5)
-        victims_standard = df_valid[df_valid['Falli_Subiti_Used'] >= MIN_FOULS_STANDARD].copy()
+        # 2. Rilevazione Standard (Media Falli Subiti Alta, >=2.0 + ≥2 90s per qualità)
+        victims_standard = df_valid[
+            (df_valid['Falli_Subiti_Used'] >= MIN_FOULS_STANDARD) &
+            (df_valid['90s Giocati Totali'] >= 2.0)  # NOVITÀ: Filtro extra per standard
+        ].copy()
         
-        # 3. Rilevazione Top Player (Attaccanti chiave con alto volume di gioco - Es. Martinez)
+        # 3. Rilevazione Top Player (Attaccanti chiave con alto volume di gioco)
         victims_top_player = df_valid[
             (df_valid['Ruolo'] == 'ATT') &
-            (df_valid['90s Giocati Totali'] >= MIN_90S_TOP_PLAYER)
+            (df_valid['90s Giocati Totali'] >= MIN_90S_TOP_PLAYER) &
+            (df_valid['Falli_Subiti_Used'] >= 1.5)  # NOVITÀ: Aggiunto soglia minima per ATT
         ].copy()
-
 
         # Combina le tre liste e rimuovi duplicati
         all_victims_df = pd.concat([victims_standard, victims_forced_seasonal, victims_top_player]).drop_duplicates(subset=['Player'])
 
         # Processa i risultati combinati
         for _, player in all_victims_df.iterrows():
-            
-            # Etichettatura (pulita, solo per l'emoji)
-            if player['Ruolo'] == 'ATT' and player['90s Giocati Totali'] >= MIN_90S_TOP_PLAYER:
-                risk_label = "⭐ Top Attaccante"
-            elif player['Stagional_Spread'] >= SPREAD_THRESHOLD_HIGH:
-                risk_label = "🔥 Stagionale"
-            elif player['Falli_Subiti_Used'] >= 2.0:
-                risk_label = "🔴 Alto"
-            else:
-                risk_label = "🟡 Standard"
-
             all_victims.append({
                 'Player': player['Player'],
                 'Squadra': player['Squadra'],
-                'Team_Type': team_type,
-                'Falli_Subiti_90': player['Falli_Subiti_Used'],
-                'Falli_Source': player['Falli_Subiti_Source'],
-                'Posizione': player.get('Posizione_Primaria', 'N/A'),
-                'Ruolo': player.get('Ruolo', 'N/A'),
-                'Ranking_Metric': player['Falli_Subiti_Used'], 
-                'Risk_Label': risk_label
+                'Falli_Subiti_Used': player['Falli_Subiti_Used'],
+                '90s Giocati Totali': player['90s Giocati Totali'],
+                'Categoria': 'Standard' if player['Falli_Subiti_Used'] >= MIN_FOULS_STANDARD else 'Top Player' if player['Ruolo'] == 'ATT' else 'Forced Seasonal'
             })
-            
-    # Ordina i risultati finali (Priorità ai Falli Subiti Usata)
-    all_victims.sort(key=lambda x: x['Falli_Subiti_90'], reverse=True)
     
     return all_victims
 
 def display_starter_verification(high_risk_victims):
-    """Mostra interfaccia verifica titolarità per FASE 1."""
-    st.markdown("---")
-    st.markdown("### 🔍 FASE 1: Verifica Titolari")
-    st.markdown("""
-    <div class='verification-box'>
-        <h4>⚠️ Giocatori che Subiscono Molti Falli</h4>
-        <p><strong>👉 Seleziona i giocatori NON TITOLARI</strong> per escluderli dall'analisi.</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
+    """Visualizza la verifica titolarità per vittime ad alto rischio."""
     excluded = []
-    if not high_risk_victims:
-        st.info("✅ Nessun giocatore ad alto rischio identificato.")
-        return excluded
+    st.markdown("### 🔍 FASE 1: Verifica Titolarità - Vittime ad Alto Rischio (Falli Subiti)")
+    st.info(f"Identificate {len(high_risk_victims)} potenziali 'magneti per falli'. Escludi se non titolari per raffinare i duelli.")
     
-    home_victims = [p for p in high_risk_victims if p['Team_Type'] == 'Casa']
-    away_victims = [p for p in high_risk_victims if p['Team_Type'] == 'Trasferta']
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if home_victims:
-            st.markdown(f"#### 🏠 {home_victims[0]['Squadra']}")
-            for player in home_victims:
-                risk_emoji = "⭐" if "Top Attaccante" in player['Risk_Label'] else ("🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Alto" in player['Risk_Label'] else "🟡"))
-                
-                # PULIZIA: Solo Emoji, Nome e Ruolo.
-                is_excluded = st.checkbox(
-                    f"{risk_emoji} {player['Player']} ({player['Ruolo']})",
-                    key=f"pre_home_{player['Player']}"
-                )
-                if is_excluded:
-                    excluded.append(player['Player'])
-    
-    with col2:
-        if away_victims:
-            st.markdown(f"#### ✈️ {away_victims[0]['Squadra']}")
-            for player in away_victims:
-                risk_emoji = "⭐" if "Top Attaccante" in player['Risk_Label'] else ("🔥" if "Stagionale" in player['Risk_Label'] else ("🔴" if "Alto" in player['Risk_Label'] else "🟡"))
-                
-                # PULIZIA: Solo Emoji, Nome e Ruolo.
-                is_excluded = st.checkbox(
-                    f"{risk_emoji} {player['Player']} ({player['Ruolo']})",
-                    key=f"pre_away_{player['Player']}"
-                )
-                if is_excluded:
-                    excluded.append(player['Player'])
-    
-    st.markdown("---")
+    for victim in high_risk_victims:
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.write(f"**{victim['Player']}** ({victim['Squadra']}) - {victim['Falli_Subiti_Used']:.2f} falli subiti/90s | {victim['Categoria']}")
+        with col2:
+            if st.button(f"❌ Escludi {victim['Player']}", key=f"exclude_{victim['Player']}"):
+                excluded.append(victim['Player'])
     
     if excluded:
-        st.warning(f"⚠️ **{len(excluded)} giocatori esclusi:** {', '.join(excluded)}")
-        st.session_state['excluded_pre'] = excluded
-    else:
-        st.success("✅ Nessuna esclusione (FASE 1).")
-        st.session_state['excluded_pre'] = []
-    
+        st.warning(f"🔧 Esclusi: {', '.join(excluded)}")
     return excluded
-# =========================================================================
-# VISUALIZZAZIONI DINAMICHE
-# =========================================================================
 
-def apply_balancing_logic(predictions_df, home_team_name, away_team_name):
+# =========================================================================
+# FUNZIONI LOGICA BILANCIAMENTO TOP 4
+# =========================================================================
+def apply_balancing_logic(all_predictions_df, home_team, away_team):
     """
-    Applica la logica di distribuzione ottimizzata al DataFrame filtrato.
+    Applica logica di bilanciamento ottimizzata per il TOP 4 dopo esclusioni.
     """
-    home_risks = predictions_df[predictions_df['Squadra'] == home_team_name]
-    away_risks = predictions_df[predictions_df['Squadra'] == away_team_name]
+    RISK_DIFFERENCE_THRESHOLD = 0.2
+    
+    home_risks = all_predictions_df[all_predictions_df['Squadra'] == home_team].sort_values('Rischio_Finale', ascending=False)
+    away_risks = all_predictions_df[all_predictions_df['Squadra'] == away_team].sort_values('Rischio_Finale', ascending=False)
+    
+    count_home = len(home_risks)
+    count_away = len(away_risks)
     
     top_4_ottimizzato = []
     
-    top_4_iniziale = predictions_df.head(4)
-    count_home = (top_4_iniziale['Squadra'] == home_team_name).sum()
-    count_away = (top_4_iniziale['Squadra'] == away_team_name).sum()
-
-    RISK_DIFFERENCE_THRESHOLD = 0.40 
-
-    # La logica ottimizzata (2-2 preferito, 3-1 accettato solo se rischio netto) rimane intatta
-    if (count_home == 4 or count_away == 4) and len(home_risks) >= 2 and len(away_risks) >= 2:
-        # Se troppo sbilanciato (4-0/0-4) -> FORZA 2-2
-        top_4_ottimizzato.extend(home_risks.head(2).to_dict('records'))
-        top_4_ottimizzato.extend(away_risks.head(2).to_dict('records'))
+    if count_home >= 4 or count_away >= 4:
+        # Se una squadra ha 4+, usa i primi 4 di quella e 0 dell'altra
+        if count_home >= 4:
+            top_4_ottimizzato = home_risks.head(4).to_dict('records')
+        else:
+            top_4_ottimizzato = away_risks.head(4).to_dict('records')
+    
+    elif (count_home == 3 and count_away >= 1) or (count_away == 3 and count_home >= 1):
+        # 3-1: Verifica se la differenza giustifica lo sbilanciamento
+        top_4_iniziale = pd.concat([home_risks, away_risks]).head(4)
+        top_4_ottimizzato = top_4_iniziale.to_dict('records')
+        
+        # Controlla se forzare 2-2
+        if len(away_risks) >= 2 and len(home_risks) >= 2:
+            risk_dominant_3rd = home_risks.iloc[2]['Rischio_Finale'] if count_home == 3 else away_risks.iloc[2]['Rischio_Finale']
+            risk_minor_2nd = away_risks.iloc[1]['Rischio_Finale'] if count_home == 3 else home_risks.iloc[1]['Rischio_Finale']
+            
+            if risk_dominant_3rd < (risk_minor_2nd + RISK_DIFFERENCE_THRESHOLD):
+                top_4_ottimizzato = []
+                top_4_ottimizzato.extend(home_risks.head(2).to_dict('records'))
+                top_4_ottimizzato.extend(away_risks.head(2).to_dict('records'))
     
     elif (count_home == 3 and count_away == 1) or (count_home == 1 and count_away == 3):
         
@@ -779,127 +738,12 @@ def main_prediction_interface(df_players, df_referees):
         else:
             st.info("ℹ️ Nessun giocatore ad alto rischio (falli subiti) rilevato. Procedi con l'elaborazione.")
         
+        # NOVITÀ: Mantieni high_risk_victims filtrati (esclusi non titolari)
+        high_risk_victims_filtered = [victim['Player'] for victim in high_risk_victims if victim['Player'] not in excluded_pre]
+        
         # Applica esclusioni PRE ai DataFrame che saranno passati al modello
         home_df_filtered = initial_home_df[~initial_home_df['Player'].isin(excluded_pre)]
         away_df_filtered = initial_away_df[~initial_away_df['Player'].isin(excluded_pre)]
         
         if excluded_pre:
-            st.info(f"🔧 **Analisi configurata:** {len(excluded_pre)} giocatori esclusi (FASE 1).")
-        
-        # Pulsante elaborazione
-        if st.button("🎯 Elabora Pronostico", type="primary", use_container_width=True):
-            with st.spinner("🔄 Analisi in corso... Elaborazione algoritmo avanzato..."):
-                try:
-                    model = SuperAdvancedCardPredictionModel()
-                    result = model.predict_match_cards(home_df_filtered, away_df_filtered, ref_df)
-                    
-                    st.success("✅ Analisi completata! Usa i pulsanti '❌ Escludi' per lo scorrimento del TOP 4.")
-                    
-                    st.session_state['result'] = result
-                    st.session_state['home_team'] = home_team
-                    st.session_state['away_team'] = away_team
-                    st.session_state['referee'] = referee
-                    
-                    # Resetta ricalcolo e scorrimento al risultato iniziale
-                    st.session_state['recalculated_result'] = result
-                    if 'scrolled_top_4' in st.session_state:
-                         del st.session_state['scrolled_top_4']
-                    if 'scrolled_exclusions' in st.session_state:
-                         del st.session_state['scrolled_exclusions']
-                    
-                except Exception as e:
-                    st.error(f"❌ Errore: {str(e)}")
-                    return
-        
-        # Mostra risultati se disponibili
-        if st.session_state['result'] is not None:
-            
-            # TOP 4 VISUALIZZAZIONE DINAMICA
-            display_dynamic_top_4()
-            
-            st.markdown("---")
-            
-            # Il resto delle analisi usa l'ultimo risultato completo
-            result = st.session_state.get('recalculated_result', st.session_state['result'])
-            
-            # Analisi partita
-            display_match_analysis(result)
-            
-            st.markdown("---")
-            
-            # Arbitro
-            display_referee_analysis(result['referee_profile'])
-            
-            st.markdown("---")
-            
-            # Download
-            csv_data = result['all_predictions'].to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Scarica Predizioni Complete (CSV)",
-                data=csv_data,
-                file_name=f"predizioni_{home_team}_vs_{away_team}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv"
-            )
-    
-    else:
-        st.info("👆 Seleziona squadre casa, trasferta e arbitro per iniziare.")
-
-# =========================================================================
-# MAIN
-# =========================================================================
-def main():
-    
-    # === INIZIALIZZAZIONE SESSION STATE ROBUSTA ===
-    if 'full_df_players' not in st.session_state:
-        st.session_state['full_df_players'] = None
-    if 'excluded_pre' not in st.session_state:
-         st.session_state['excluded_pre'] = []
-    if 'result' not in st.session_state:
-         st.session_state['result'] = None
-    if 'recalculated_result' not in st.session_state:
-         st.session_state['recalculated_result'] = None
-    if 'scrolled_top_4' not in st.session_state:
-         st.session_state['scrolled_top_4'] = None
-    if 'scrolled_exclusions' not in st.session_state:
-         st.session_state['scrolled_exclusions'] = []
-    if 'home_team' not in st.session_state:
-         st.session_state['home_team'] = None
-    if 'away_team' not in st.session_state:
-         st.session_state['away_team'] = None
-
-    st.markdown("""
-    <div class='main-header'>
-        <h1>⚽ Il Mostro 5.0 - Sistema Predizione Cartellini</h1>
-        <p>Algoritmo ottimizzato per predire i 4 giocatori più probabili da ammonire</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    if not MODEL_LOADED:
-        return
-    
-    with st.spinner("📊 Caricamento dati..."):
-        data = load_excel_data()
-    
-    if data is None:
-        st.error("❌ Impossibile caricare i dati. Verifica che il file 'Il Mostro 5.0.xlsx' sia presente.")
-        return
-    
-    df_players = data['players']
-    df_referees = data['referees']
-    
-    # === SALVATAGGIO IN SESSION STATE SOLO DOPO IL CARICAMENTO ===
-    if st.session_state['full_df_players'] is None:
-        st.session_state['full_df_players'] = df_players
-    
-    # Mostra statistiche nel sidebar
-    st.sidebar.success(f"✅ Dati caricati: {len(df_players)} giocatori, {len(df_referees)} arbitri")
-    
-    # Debug: mostra lista arbitri nella sidebar
-    with st.sidebar.expander("📋 Lista Arbitri Caricati"):
-        for idx, ref in df_referees.iterrows():
-            st.write(f"• {ref['Nome']} - {ref['Gialli a partita']:.2f} gialli/partita")
-    
-    main_prediction_interface(df_players, df_referees)
-
-if __name__ == '__main__':
-    main()
+            st.info(f"🔧 **Analisi configurata:** {len(excluded_pre)} giocatori esclusi (FA
