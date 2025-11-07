@@ -4,12 +4,11 @@ MODELLO OTTIMIZZATO PER PREDIZIONE CARTELLINI
 Sistema semplificato, efficace e realistico per predire i 4 giocatori
 più probabili a ricevere cartellino giallo in una partita.
 
-PRINCIPI CHIAVE:
-1. Semplicità > Complessità (meno parametri, più efficacia)
-2. Dati storici individuali come base solida
-3. Duelli realistici (attaccante vs difensore, laterali opposti)
-4. Calibrazione su medie Serie A reali
-5. Bilanciamento forzato (2-2 predefinito, 3-1 solo se evidente e supportato dall'aggressività di squadra)
+NOVITÀ V5.1:
+- Duelli BIDIREZIONALI (home vs away e viceversa).
+- Boost duelli basato su FALLI SUBITI della vittima (non più su rischio base della vittima).
+- Metodo predict_match_cards per compatibilità con app.py.
+- Integrazione high_risk_victims da app.py per prioritarizzare.
 """
 
 import pandas as pd
@@ -25,7 +24,8 @@ warnings.filterwarnings('ignore')
 
 # Medie Serie A (stagione tipo)
 SERIE_A_AVG_CARDS_PER_GAME = 4.2
-SERIE_A_AVG_FOULS_PER_PLAYER = 1.8  # Media Falli fatti/90s della Serie A
+SERIE_A_AVG_FOULS_PER_PLAYER = 1.8  # Media Falli fatti/90s
+SERIE_A_AVG_FOULS_SUFFIRED = 1.8   # NOVITÀ: Media Falli subiti/90s (per vittime)
 SERIE_A_AVG_CARDS_PER_PLAYER_SEASON = 3.5
 
 # Pesi del modello (ottimizzati per accuratezza)
@@ -71,7 +71,6 @@ ZONE_MATCHUPS = {
 # Soglia per forzare il bilanciamento 2-2
 RISK_DIFFERENCE_THRESHOLD = 0.2
 
-
 # =========================================================================
 # FUNZIONI DI SUPPORTO PER POSIZIONE E ZONA
 # =========================================================================
@@ -98,19 +97,42 @@ def get_player_zone(position: str, heatmap: str) -> str:
     if role == 'FW': return 'Att_Central'
     return 'Central_Mid' # Default
 
-
-# =========================================================================
-# WRAPPER PER COMPATIBILITÀ (come richiesto in app.py)
-# =========================================================================
-
+# Wrapper per compatibilità con app.py
 def get_field_zone(position, heatmap):
-    """Wrapper per compatibilità con app.py"""
     return get_player_zone(position, heatmap)
 
 def get_player_role_category(position):
-    """Wrapper per compatibilità con app.py"""
     return get_player_role(position)
 
+# NOVITÀ: Funzione per calcolare Falli_Subiti_Used (compatibile con app.py)
+def calculate_fouls_suffered_used(df: pd.DataFrame) -> pd.DataFrame:
+    """Calcola 'Falli_Subiti_Used' se non presente (logica da app.py)."""
+    df = df.copy()
+    total_col = 'Media Falli Subiti 90s Totale'
+    seasonal_col = 'Media Falli Subiti 90s Stagionale'
+    
+    has_total = total_col in df.columns
+    has_seasonal = seasonal_col in df.columns
+    
+    df['Falli_Subiti_Totale'] = df.get(total_col, 0.0)
+    df['Falli_Subiti_Stagionale'] = df.get(seasonal_col, 0.0)
+    df['90s Giocati Totali'] = df.get('90s Giocati Totali', 0.0)
+    
+    if has_total:
+        df['Falli_Subiti_Used'] = df['Falli_Subiti_Totale']
+        if has_seasonal:
+            mask_zero = (df['Falli_Subiti_Used'] == 0) | df['Falli_Subiti_Used'].isna()
+            df.loc[mask_zero, 'Falli_Subiti_Used'] = df.loc[mask_zero, 'Falli_Subiti_Stagionale']
+        df['Falli_Subiti_Source'] = 'Totale'  # Semplificato
+    elif has_seasonal:
+        df['Falli_Subiti_Used'] = df['Falli_Subiti_Stagionale']
+        df['Falli_Subiti_Source'] = 'Stagionale'
+    else:
+        df['Falli_Subiti_Used'] = 0
+        df['Falli_Subiti_Source'] = 'N/A'
+    
+    df['Falli_Subiti_Used'] = df['Falli_Subiti_Used'].fillna(0)
+    return df
 
 # =========================================================================
 # MODELLO AVANZATO DI PREDIZIONE
@@ -118,28 +140,25 @@ def get_player_role_category(position):
 
 class SuperAdvancedCardPredictionModel:
     """
-    Modello Ottimizzato 5.0 per la predizione dei cartellini.
-    Integra storico, rate di falli, impatto arbitro e duelli dinamici.
+    Modello Ottimizzato 5.1 per la predizione dei cartellini.
+    Integra storico, rate di falli, impatto arbitro e duelli dinamici CON FALLI SUBITI.
     """
-    def __init__(self, data: Dict[str, pd.DataFrame]):
-        self.df_players = data['players']
-        self.df_referees = data['referees']
+    def __init__(self):
+        pass  # Inizializzazione vuota per compatibilità con app.py
 
     def _get_player_risk(self, df_player: pd.Series, referee_avg_yellow: float, team_aggression_score: float) -> float:
-        """Calcola il rischio base per un singolo giocatore."""
+        """Calcola il rischio base per un singolo giocatore (invariato, basato su falli FATTI)."""
         
         # 1. Tendenza Storica (35%)
-        # Normalizzazione per portare il rischio tra 0 e 1 (o vicino)
         if df_player['Media 90s per Cartellino Totale'] == 0:
-            historical_risk = 0.5 # Rischio medio se non ha abbastanza dati
+            historical_risk = 0.5
         else:
-            # Calcola la frequenza del cartellino vs la media del campionato
             frequency_ratio = (SERIE_A_AVG_CARDS_PER_PLAYER_SEASON / df_player['90s Giocati Totali']) / (1 / df_player['Media 90s per Cartellino Totale'])
-            historical_risk = min(frequency_ratio, 1.0) # Cap a 1.0
+            historical_risk = min(frequency_ratio, 1.0)
         
-        # 2. Foul Rate (25%)
+        # 2. Foul Rate (25%) - Falli FATTI
         if df_player['90s Giocati Totali'] > 5:
-            foul_rate_90s = df_player['Falli Fatti Totali'] / df_player['90s Giocati Totali']
+            foul_rate_90s = df_player.get('Falli Fatti Totali', 0) / df_player['90s Giocati Totali']
             foul_risk = min(foul_rate_90s / SERIE_A_AVG_FOULS_PER_PLAYER, 1.0)
         else:
             foul_risk = 0.5
@@ -155,7 +174,7 @@ class SuperAdvancedCardPredictionModel:
         # 5. Aggressività di Squadra (10%)
         team_risk = team_aggression_score * 0.1
 
-        # Calcolo del rischio base (somma pesata)
+        # Calcolo del rischio base
         base_risk = (
             historical_risk * WEIGHTS['historical_tendency'] +
             foul_risk * WEIGHTS['foul_rate'] +
@@ -166,175 +185,167 @@ class SuperAdvancedCardPredictionModel:
 
         return base_risk
 
-
-    def _calculate_critical_matchups(self, home_players: pd.DataFrame, away_players: pd.DataFrame) -> List[Dict]:
-        """Identifica e valuta i duelli critici campo per campo."""
+    def _calculate_critical_matchups(self, aggressor_df: pd.DataFrame, victim_df: pd.DataFrame, high_risk_victims: List[str] = None) -> List[Dict]:
+        """Identifica e valuta i duelli critici (aggressori vs vittime). NOVITÀ: Usa falli subiti della vittima."""
         
         critical_matchups = []
         
-        # Duelli Laterali (Wide_Def vs Wide_Att) - I più importanti
-        for h_row in home_players.itertuples():
-            h_zone = get_player_zone(h_row.Posizione_Primaria, h_row.Heatmap)
-            h_role = get_player_role(h_row.Posizione_Primaria)
+        # Assicura Falli_Subiti_Used
+        victim_df = calculate_fouls_suffered_used(victim_df)
+        
+        # Prioritarizza vittime ad alto rischio se fornite
+        victim_priority_bonus = 1.2 if high_risk_victims else 1.0
+        
+        for a_row in aggressor_df.itertuples():
+            a_zone = get_player_zone(a_row.Posizione_Primaria, getattr(a_row, 'Heatmap', ''))
+            a_role = get_player_role(a_row.Posizione_Primaria)
 
-            # Esegui la ricerca di duelli
-            for a_row in away_players.itertuples():
-                a_zone = get_player_zone(a_row.Posizione_Primaria, a_row.Heatmap)
-                a_role = get_player_role(a_row.Posizione_Primaria)
+            for v_row in victim_df.itertuples():
+                v_zone = get_player_zone(v_row.Posizione_Primaria, getattr(v_row, 'Heatmap', ''))
+                v_role = get_player_role(v_row.Posizione_Primaria)
                 
-                # Cerca incroci critici (Duello: Aggressore Difensivo vs Vittima Attaccante)
-                if (h_zone, a_zone) in ZONE_MATCHUPS:
-                    matchup_risk = ZONE_MATCHUPS.get((h_zone, a_zone))
+                # Cerca incroci critici
+                if (a_zone, v_zone) in ZONE_MATCHUPS:
+                    matchup_risk = ZONE_MATCHUPS.get((a_zone, v_zone))
                     
-                    # Calcola il fattore di aggressività individuale nel duello
-                    h_risk_base = h_row.Rischio_Base
-                    a_risk_base = a_row.Rischio_Base
+                    # NOVITÀ: Victim risk basato su FALLI SUBITI (non rischio base)
+                    victim_fouls_rate = v_row.Falli_Subiti_Used  # O fallback a Media Falli Subiti 90s Totale
+                    victim_risk = min(victim_fouls_rate / SERIE_A_AVG_FOULS_SUFFIRED, 2.0)  # Normalizza, cap 2x
                     
-                    # Rischio Duello (moltiplica il rischio base del difensore/centrocampista)
-                    # Aggiunge un fattore proporzionale alla differenza di rischio con l'avversario
-                    final_risk_factor = matchup_risk * (1 + (a_risk_base - h_risk_base) * 0.5)
+                    # Bonus se vittima è high_risk
+                    if high_risk_victims and v_row.Player in high_risk_victims:
+                        victim_risk *= victim_priority_bonus
+                    
+                    # Rischio Duello: Moltiplica per victim_risk
+                    final_risk_factor = matchup_risk * (1 + victim_risk * 0.3)  # Fattore 0.3 per boost moderato
 
                     critical_matchups.append({
-                        'aggressor_player': h_row.Nome,
-                        'aggressor_team': h_row.Squadra,
-                        'aggressor_zone': h_zone,
-                        'aggressor_role': h_role,
-                        'victim_player': a_row.Nome,
-                        'victim_team': a_row.Squadra,
-                        'victim_zone': a_zone,
-                        'victim_role': a_role,
+                        'aggressor_player': a_row.Player,  # Assumo 'Player' come nome (da app.py)
+                        'aggressor_team': a_row.Squadra,
+                        'aggressor_zone': a_zone,
+                        'aggressor_role': a_role,
+                        'victim_player': v_row.Player,
+                        'victim_team': v_row.Squadra,
+                        'victim_zone': v_zone,
+                        'victim_role': v_role,
                         'zone_compatibility': matchup_risk,
+                        'victim_fouls_rate': victim_fouls_rate,
                         'risk_factor': final_risk_factor
                     })
 
         return critical_matchups
 
-
-    def predict(self, home_team: str, away_team: str, referee: str) -> Dict:
+    def predict_match_cards(self, home_df: pd.DataFrame, away_df: pd.DataFrame, ref_df: pd.DataFrame, high_risk_victims: List[str] = None) -> Dict:
         """
-        Esegue la predizione completa e bilancia il risultato.
+        Predizione completa per match cards (compatibile con app.py).
+        Riceve df filtrati direttamente.
         """
-        
-        # --- PREPARAZIONE DATI ---
-        
-        df_home = self.df_players[self.df_players['Squadra'] == home_team].copy()
-        df_away = self.df_players[self.df_players['Squadra'] == away_team].copy()
+        if high_risk_victims is None:
+            high_risk_victims = []
         
         # Arbitro
-        ref_data = self.df_referees[self.df_referees['Nome'] == referee]
-        if ref_data.empty:
-            referee_avg_yellow = SERIE_A_AVG_CARDS_PER_GAME
-        else:
-            referee_avg_yellow = ref_data['Gialli a partita'].iloc[0]
+        referee_avg_yellow = ref_df['Gialli a partita'].iloc[0] if not ref_df.empty else SERIE_A_AVG_CARDS_PER_GAME
 
-        # Score Aggressività di Squadra
-        home_aggression = df_home['Falli Fatti Totali'].sum() / df_home['90s Giocati Totali'].sum()
-        away_aggression = df_away['Falli Fatti Totali'].sum() / df_away['90s Giocati Totali'].sum()
+        # Score Aggressività di Squadra (basato su falli FATTI)
+        home_aggression = home_df['Falli Fatti Totali'].sum() / home_df['90s Giocati Totali'].sum() if home_df['90s Giocati Totali'].sum() > 0 else 0
+        away_aggression = away_df['Falli Fatti Totali'].sum() / away_df['90s Giocati Totali'].sum() if away_df['90s Giocati Totali'].sum() > 0 else 0
         
         home_aggression_score = min(home_aggression / SERIE_A_AVG_FOULS_PER_PLAYER, 1.5)
         away_aggression_score = min(away_aggression / SERIE_A_AVG_FOULS_PER_PLAYER, 1.5)
         
-        # --- CALCOLO RISCHIO BASE ---
-
-        df_home['Rischio_Base'] = df_home.apply(
+        # Calcolo Rischio Base
+        home_df['Rischio_Base'] = home_df.apply(
             lambda row: self._get_player_risk(row, referee_avg_yellow, home_aggression_score), axis=1
         )
-        df_away['Rischio_Base'] = df_away.apply(
+        away_df['Rischio_Base'] = away_df.apply(
             lambda row: self._get_player_risk(row, referee_avg_yellow, away_aggression_score), axis=1
         )
         
-        # --- CALCOLO DUELLI CRITICI (APPLICA BOOST) ---
-
-        critical_matchups = self._calculate_critical_matchups(df_home, df_away)
+        # NOVITÀ: Duelli BIDIREZIONALI
+        critical_matchups_home = self._calculate_critical_matchups(home_df, away_df, high_risk_victims)
+        critical_matchups_away = self._calculate_critical_matchups(away_df, home_df, high_risk_victims)
+        critical_matchups = critical_matchups_home + critical_matchups_away
         
-        # Inizializza il rischio finale con il rischio base
-        df_home['Rischio_Finale'] = df_home['Rischio_Base']
-        df_away['Rischio_Finale'] = df_away['Rischio_Base']
+        # Inizializza rischio finale
+        home_df['Rischio_Finale'] = home_df['Rischio_Base']
+        away_df['Rischio_Finale'] = away_df['Rischio_Base']
         
-        # Applica il boost dei duelli (solo sul giocatore aggressore del duello critico)
+        # Applica boost (per aggressori)
         for m in critical_matchups:
             player = m['aggressor_player']
-            team = m['aggressor_team']
-            risk_boost_factor = m['risk_factor'] # Fattore moltiplicativo
+            risk_boost_factor = m['risk_factor']
+            
+            # Applica al df corretto
+            if player in home_df['Player'].values:
+                current_risk = home_df.loc[home_df['Player'] == player, 'Rischio_Base'].iloc[0]
+                home_df.loc[home_df['Player'] == player, 'Rischio_Finale'] = current_risk * risk_boost_factor
+            elif player in away_df['Player'].values:
+                current_risk = away_df.loc[away_df['Player'] == player, 'Rischio_Base'].iloc[0]
+                away_df.loc[away_df['Player'] == player, 'Rischio_Finale'] = current_risk * risk_boost_factor
 
-            if team == home_team:
-                current_risk = df_home.loc[df_home['Nome'] == player, 'Rischio_Base'].iloc[0]
-                df_home.loc[df_home['Nome'] == player, 'Rischio_Finale'] = current_risk * risk_boost_factor
-            elif team == away_team:
-                current_risk = df_away.loc[df_away['Nome'] == player, 'Rischio_Base'].iloc[0]
-                df_away.loc[df_away['Nome'] == player, 'Rischio_Finale'] = current_risk * risk_boost_factor
-
-        # --- BILANCIAMENTO E SCELTA FINALE ---
-
-        all_players = pd.concat([df_home, df_away]).sort_values(by='Rischio_Finale', ascending=False)
+        # Bilanciamento e TOP 4 (invariato)
+        all_players = pd.concat([home_df, away_df]).sort_values(by='Rischio_Finale', ascending=False)
         
-        # Forza la top 4 a mantenere l'equilibrio 2-2 di default
         top_4 = all_players.head(4).copy()
+        home_team = home_df['Squadra'].iloc[0] if not home_df.empty else ''
+        away_team = away_df['Squadra'].iloc[0] if not away_df.empty else ''
         
         home_count = len(top_4[top_4['Squadra'] == home_team])
         away_count = len(top_4[top_4['Squadra'] == away_team])
 
-        # Se il risultato è sbilanciato (4-0 o 3-1), verifica se c'è un'evidente differenza di rischio
         if home_count == 4 or away_count == 4 or home_count == 3 or away_count == 3:
-            
-            home_top_risk_sum = df_home.head(4)['Rischio_Finale'].sum()
-            away_top_risk_sum = df_away.head(4)['Rischio_Finale'].sum()
-            
+            home_top_risk_sum = home_df.head(4)['Rischio_Finale'].sum()
+            away_top_risk_sum = away_df.head(4)['Rischio_Finale'].sum()
             risk_diff_norm = abs(home_top_risk_sum - away_top_risk_sum) / max(home_top_risk_sum, away_top_risk_sum)
             
-            # Applica il bilanciamento se la differenza di rischio non è estrema
             if risk_diff_norm < RISK_DIFFERENCE_THRESHOLD:
-                
-                # Forza un 2-2 prendendo i primi 2 di ogni squadra
-                top_home_2 = df_home.sort_values(by='Rischio_Finale', ascending=False).head(2).copy()
-                top_away_2 = df_away.sort_values(by='Rischio_Finale', ascending=False).head(2).copy()
-                
+                top_home_2 = home_df.sort_values(by='Rischio_Finale', ascending=False).head(2).copy()
+                top_away_2 = away_df.sort_values(by='Rischio_Finale', ascending=False).head(2).copy()
                 if not top_home_2.empty and not top_away_2.empty:
                     top_4 = pd.concat([top_home_2, top_away_2]).sort_values(by='Rischio_Finale', ascending=False)
                 else:
-                    # Fallback
                     top_4 = all_players.head(4)
             else:
-                # Se la differenza è ESTREMA, rispetta il 3-1 o 4-0
                 top_4 = all_players.head(4)
 
-
-        # --- PREPARAZIONE OUTPUT ---
-        
-        predictions = top_4[['Nome', 'Squadra', 'Posizione_Primaria', 'Rischio_Finale']].copy()
+        # Preparazione Output
+        predictions = top_4[['Player', 'Squadra', 'Posizione_Primaria', 'Rischio_Finale']].copy()  # Usa 'Player' da app.py
         predictions.rename(columns={'Posizione_Primaria': 'Posizione', 'Rischio_Finale': 'Rischio'}, inplace=True)
-        
-        # Arrotonda il rischio per l'output
         predictions['Rischio'] = predictions['Rischio'].round(3)
 
         return {
-            'predictions_df': predictions,
-            'critical_matchups': [
+            'all_predictions': all_players,  # Per app.py (tutto il df)
+            'top_4_predictions': predictions.to_dict('records'),
+            'critical_matchups': [  # Semplificato
                 {
                     'aggressor_player': m['aggressor_player'],
                     'aggressor_team': m['aggressor_team'],
-                    'aggressor_zone': m['aggressor_zone'],
-                    'aggressor_role': m['aggressor_role'],
                     'victim_player': m['victim_player'],
                     'victim_team': m['victim_team'],
-                    'victim_zone': m['victim_zone'],
-                    'victim_role': m['victim_role'],
-                    'compatibility': m['zone_compatibility']
+                    'risk_factor': m['risk_factor'],
+                    'victim_fouls_rate': m['victim_fouls_rate']
                 }
                 for m in critical_matchups
             ],
+            'high_risk_victims_used': high_risk_victims,  # NOVITÀ: Per debug
             'algorithm_summary': {
-                'methodology': 'Modello Ottimizzato - Distribuzione Dinamica',
+                'methodology': 'Modello Ottimizzato 5.1 - Duelli Bidirezionali con Falli Subiti',
                 'critical_matchups_found': len(critical_matchups),
-                'high_risk_players': (all_players['Rischio_Finale'] > 0.4).sum(),
+                'high_risk_victims_integrated': len([v for v in high_risk_victims if any(m['victim_player'] == v for m in critical_matchups)]),
                 'weights_used': WEIGHTS,
                 'aggression_diff_factor': abs(home_aggression_score - away_aggression_score),
                 'dynamic_risk_threshold_applied': RISK_DIFFERENCE_THRESHOLD
+            },
+            'match_info': {  # Per app.py
+                'home_team': home_team,
+                'away_team': away_team,
+                'expected_total_cards': referee_avg_yellow,
+                'algorithm_confidence': 'High' if len(critical_matchups) > 5 else 'Medium'
+            },
+            'referee_profile': {  # Per app.py
+                'name': ref_df['Nome'].iloc[0] if not ref_df.empty else 'Default',
+                'cards_per_game': referee_avg_yellow,
+                'strictness_factor': referee_avg_yellow / SERIE_A_AVG_CARDS_PER_GAME,
+                'severity_level': 'strict' if referee_avg_yellow > 4.5 else 'medium' if referee_avg_yellow > 3.5 else 'permissive'
             }
         }
-
-# =========================================================================
-# CLASSE PRINCIPALE ESPORTATA
-# =========================================================================
-# La classe SuperAdvancedCardPredictionModel è il tuo modello principale.
-# Le funzioni get_field_zone e get_player_role_category sono wrapper per app.py.
