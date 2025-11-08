@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import hashlib
 from typing import Dict, Any
-import os  # Necessario per la lettura dei file
+# import os # Rimosso, non necessario per la lettura di un singolo file Excel
 
 warnings.filterwarnings('ignore')
 
@@ -16,6 +16,7 @@ warnings.filterwarnings('ignore')
 # =========================================================================
 MODEL_LOADED = False
 try:
+    # Importiamo tutte le dipendenze necessarie dal file modello
     from optimized_prediction_model import OptimizedCardPredictionModel as SuperAdvancedCardPredictionModel, get_field_zone, get_player_role_category, get_player_role, normalize_data
     MODEL_LOADED = True
 except ImportError as e:
@@ -25,8 +26,7 @@ except ImportError as e:
 # =========================================================================
 # CONFIGURAZIONE
 # =========================================================================
-EXCEL_FILE_NAME = 'Il Mostro 5.0.xlsx' # Nome originale del file
-CSV_PREFIX = f"{EXCEL_FILE_NAME.replace('.xlsx', '')} - " # Prefisso per i file CSV (es. 'Il Mostro 5.0 - ')
+EXCEL_FILE_NAME = 'Il Mostro 5.0.xlsx' # Ripristinato all'unico file Excel
 REFEREE_SHEET_NAME = 'Arbitri'
 TEAM_SHEET_NAMES = [
     'Atalanta', 'Bologna', 'Cagliari', 'Como', 'Cremonese', 'Fiorentina', 
@@ -41,11 +41,79 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ... (Omessa la sezione STILE PERSONALIZZATO per brevità) ...
+# =========================================================================
+# STILE PERSONALIZZATO (Invariato)
+# =========================================================================
+st.markdown("""
+<style>
+    .main-header {
+        background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);
+        padding: 2rem;
+        border-radius: 15px;
+        text-align: center;
+        color: #333;
+        margin-bottom: 2rem;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+    .main-header h1, .main-header p {
+        color: #333;
+    }
+    .metric-box {
+        background: linear-gradient(135deg, #2196f3 0%, #1976d2 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+        text-align: center;
+        margin: 0.5rem;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    .metric-box h4 {
+        margin-top: 0;
+        opacity: 0.8;
+    }
+    .referee-info {
+        background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%);
+        padding: 1.5rem;
+        border-radius: 15px;
+        color: white;
+        margin: 1rem 0;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    .player-card {
+        border-left: 6px solid;
+        padding: 15px 15px;
+        margin-bottom: 15px;
+        border-radius: 10px;
+        background-color: #f7f9fc;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        transition: background-color 0.2s;
+    }
+    .player-card:hover {
+        background-color: #f0f3f7;
+    }
+    .player-details h4 {
+        margin-bottom: 3px !important;
+        font-size: 1.1em;
+        font-weight: 600;
+    }
+    .player-details p {
+        font-size: 0.9em;
+        color: #777;
+    }
+    .player-details .rank-number {
+        font-size: 1.2em; 
+        font-weight: 900; 
+        margin-right: 5px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 
 # =========================================================================
-# FUNZIONI DI UTILITY E BILANCIAMENTO (DEFINITE PRIMA DI run_prediction)
+# FUNZIONI DI UTILITY E BILANCIAMENTO
 # =========================================================================
 
 def get_risk_color(risk_score: float) -> str:
@@ -208,78 +276,83 @@ def init_session_state():
             st.session_state[key] = value
 
 # =========================================================================
-# FUNZIONI DI CARICAMENTO DATI (MODIFICATA PER CSV)
+# FUNZIONI DI CARICAMENTO DATI (RIPRISTINATA PER EXCEL)
 # =========================================================================
 @st.cache_data
 def load_excel_data():
-    """Carica tutti i dati dai file CSV simulando la lettura del file Excel."""
+    """Carica tutti i dati dal file Excel."""
     
     data = {}
     team_dataframes = []
-    df_referees = None
-    SERIE_A_AVG_CARDS = 4.2
     
-    st.sidebar.info(f"Tentativo di caricamento da file CSV con prefisso: '{CSV_PREFIX}'")
+    # 1. Tentativo di apertura del file Excel
+    try:
+        xls = pd.ExcelFile(EXCEL_FILE_NAME)
+        available_sheets = xls.sheet_names
+    except Exception as e:
+        # Errore critico: File non trovato o corrotto
+        st.error(f"FATAL ERROR: Impossibile trovare/aprire il file Excel '{EXCEL_FILE_NAME}'. Dettagli: {e}")
+        return None
 
-    # 1. Caricamento Fogli Squadra
+    # 2. Caricamento Fogli Squadra
     for sheet in TEAM_SHEET_NAMES:
-        csv_file_name = f"{CSV_PREFIX}{sheet}.csv"
-        try:
-            # Assumo che i file CSV siano nella directory corrente o accessibile
-            df = pd.read_csv(csv_file_name)
-            df.insert(1, 'Squadra', sheet)
-            team_dataframes.append(df)
-        except FileNotFoundError:
-            st.sidebar.warning(f"⚠️ File CSV non trovato per la squadra {sheet}: {csv_file_name}")
-            continue
-        except Exception as e:
-            st.sidebar.error(f"⚠️ Errore durante la lettura del file CSV di {sheet}: {e}")
-            continue
+        if sheet in available_sheets:
+            try:
+                df = pd.read_excel(xls, sheet)
+                # Verifica che il foglio non sia vuoto o che abbia colonne
+                if not df.empty and len(df.columns) > 1:
+                    df.insert(1, 'Squadra', sheet)
+                    team_dataframes.append(df)
+                else:
+                    st.sidebar.warning(f"⚠️ Foglio squadra {sheet} trovato ma vuoto.")
+            except Exception as e:
+                st.sidebar.error(f"⚠️ Errore lettura foglio {sheet}: {e}")
+                continue
 
     if not team_dataframes:
-        st.error("Nessun dato squadra trovato nei file CSV. Verifica i nomi e l'esistenza dei file.")
+        st.error("Nessun dato squadra valido trovato nel file Excel. Assicurati che i fogli siano presenti e contengano dati.")
         return None
 
     data['players'] = pd.concat(team_dataframes, ignore_index=True)
     
-    # 2. Caricamento Arbitri
+    # 3. Caricamento Arbitri
     default_referee_data = {
         'Nome': ['Doveri', 'Orsato', 'Mariani', 'Pairetto', 'Massa', 'Guida'],
         'Gialli a partita': [4.2, 3.8, 5.1, 4.5, 3.2, 4.8]
     }
     
-    referee_csv_file_name = f"{CSV_PREFIX}{REFEREE_SHEET_NAME}.csv"
+    SERIE_A_AVG_CARDS = 4.2
+    df_referees = None
     
     try:
-        df_referees = pd.read_csv(referee_csv_file_name)
-        
-        # Tentativo di identificazione delle colonne come nell'originale
-        nome_col = None
-        for col in df_referees.columns:
-            if any(keyword in str(col).lower().strip() for keyword in ['nome', 'arbitro', 'name', 'referee']):
-                nome_col = col; break
-        
-        gialli_col = None
-        for col in df_referees.columns:
-            if 'giall' in str(col).lower().strip() or 'card' in str(col).lower().strip():
-                gialli_col = col; break
-        
-        if nome_col and gialli_col:
-            df_referees = df_referees[[nome_col, gialli_col]].copy()
-            df_referees.columns = ['Nome', 'Gialli a partita']
-            df_referees['Nome'] = df_referees['Nome'].astype(str).str.strip()
-            df_referees = df_referees[df_referees['Nome'].notna() & (df_referees['Nome'] != '')]
-            df_referees['Gialli a partita'] = pd.to_numeric(df_referees['Gialli a partita'], errors='coerce')
-            df_referees['Gialli a partita'].fillna(SERIE_A_AVG_CARDS, inplace=True)
-            df_referees.drop_duplicates(subset=['Nome'], keep='first', inplace=True)
-            st.sidebar.success(f"✅ Caricati {len(df_referees)} arbitri dal file CSV")
-        else:
-            st.sidebar.error("❌ Impossibile identificare le colonne Nome e Gialli nel CSV Arbitri.")
-            df_referees = pd.DataFrame(default_referee_data)
+        if REFEREE_SHEET_NAME in available_sheets:
+            df_referees = pd.read_excel(xls, REFEREE_SHEET_NAME)
             
-    except FileNotFoundError:
-        st.sidebar.warning(f"⚠️ File CSV arbitri non trovato: {referee_csv_file_name}. Uso dati di default.")
-        df_referees = pd.DataFrame(default_referee_data)
+            # (Logica di identificazione colonne arbitri omessa qui per brevità, 
+            # ma è nel codice sottostante e rimane come nell'ultima versione corretta)
+            nome_col = None
+            for col in df_referees.columns:
+                if any(keyword in str(col).lower().strip() for keyword in ['nome', 'arbitro', 'name', 'referee']):
+                    nome_col = col; break
+            
+            gialli_col = None
+            for col in df_referees.columns:
+                if 'giall' in str(col).lower().strip() or 'card' in str(col).lower().strip():
+                    gialli_col = col; break
+            
+            if nome_col and gialli_col and not df_referees.empty:
+                df_referees = df_referees[[nome_col, gialli_col]].copy()
+                df_referees.columns = ['Nome', 'Gialli a partita']
+                df_referees['Nome'] = df_referees['Nome'].astype(str).str.strip()
+                df_referees = df_referees[df_referees['Nome'].notna() & (df_referees['Nome'] != '')]
+                df_referees['Gialli a partita'] = pd.to_numeric(df_referees['Gialli a partita'], errors='coerce')
+                df_referees['Gialli a partita'].fillna(SERIE_A_AVG_CARDS, inplace=True)
+                df_referees.drop_duplicates(subset=['Nome'], keep='first', inplace=True)
+                st.sidebar.success(f"✅ Caricati {len(df_referees)} arbitri dal foglio Excel")
+            else:
+                st.sidebar.warning("⚠️ Foglio Arbitri trovato ma colonne non identificabili/vuoto. Uso dati di default.")
+                df_referees = pd.DataFrame(default_referee_data)
+                
     except Exception as e:
         st.sidebar.error(f"⚠️ Errore durante il processing arbitri: {e}. Uso dati di default.")
         df_referees = pd.DataFrame(default_referee_data)
@@ -636,7 +709,7 @@ def main():
     # Gestione robusta del caricamento dati
     if data is None or st.session_state['full_df_players'] is None or st.session_state['full_df_players'].empty:
         # Se load_excel_data() fallisce, l'errore specifico è già stato stampato all'interno di essa.
-        st.error("❌ Errore Critico: Dati giocatori non disponibili. Assicurati che il file Excel e i fogli squadra siano corretti.")
+        st.error("❌ Errore Critico: Dati giocatori non disponibili. Correggi l'errore sopra e riprova.")
         st.stop()
         
     df_players = st.session_state['full_df_players']
