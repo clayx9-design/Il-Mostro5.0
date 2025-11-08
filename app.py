@@ -246,7 +246,6 @@ def run_prediction(
     all_predictions_df = prediction_result['all_predictions']
     
     # 4. Applica il bilanciamento 2-2 al TOP 4 
-    # Ora apply_balancing_logic è garantita essere definita sopra.
     top_4_predictions = apply_balancing_logic(all_predictions_df, home_team, away_team)
     
     # 5. Aggiunge i dati bilanciati al risultato
@@ -731,14 +730,22 @@ def main():
 
     data = load_excel_data()
     
-    if data is None:
+    # ********* CORREZIONE QUI *********
+    if data is None or st.session_state['full_df_players'] is None or st.session_state['full_df_players'].empty:
+        st.error("❌ Impossibile caricare o processare i dati dei giocatori. Verifica che il file Excel esista, sia accessibile e contenga dati squadra validi.")
         st.stop()
         
     df_players = st.session_state['full_df_players']
     df_referees = data['referees']
     
-    team_list = sorted(df_players['Squadra'].unique().tolist())
-    referee_list = sorted(df_referees['Nome'].unique().tolist())
+    # Tentiamo di estrarre i dati in un blocco try/except in caso di colonne mancanti
+    try:
+        team_list = sorted(df_players['Squadra'].unique().tolist())
+        referee_list = sorted(df_referees['Nome'].unique().tolist())
+    except KeyError as e:
+        st.error(f"❌ Errore nella lettura delle colonne necessarie: {e}. Controlla la struttura del tuo file Excel.")
+        st.stop()
+    # ********************************
 
     # --- Sidebar per Input ---
     st.sidebar.header("📝 Configura Partita")
