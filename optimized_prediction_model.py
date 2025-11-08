@@ -81,7 +81,10 @@ class OptimizedCardPredictionModel:
         df['Rischio_Frequenza'] = nineties_per_card.rdiv(1)
         
         # Bonus ruolo
-        df['Ruolo'] = df['Posizione_Primaria'].apply(get_player_role) if 'Posizione_Primaria' in df.columns else 'CEN'
+        if 'Posizione_Primaria' in df.columns:
+            df['Ruolo'] = df['Posizione_Primaria'].apply(get_player_role)
+        else:
+            df['Ruolo'] = 'CEN'
         role_bonus = {'DIF': 0.10, 'CEN': 0.15, 'ATT': 0.05}
         df['Rischio_Ruolo'] = df['Ruolo'].map(role_bonus).fillna(0.10)
         
