@@ -4,10 +4,10 @@ import warnings
 from typing import Dict, Any
 
 # =========================================================================
-# CONSTANTI E FUNZIONI AUSILIARIE (Definite per l'import in app.py)
+# CONSTANTI E FUNZIONI AUSILIARIE
 # =========================================================================
 
-# Assumo che 'WEIGHTS' sia una costante definita qui o importata.
+# Ponderazioni utilizzate nel calcolo del rischio
 WEIGHTS = {
     'Falli_Fatti': 0.35, 
     'Falli_per_Cartellino': 0.25, 
@@ -25,7 +25,6 @@ def get_player_role(pos: str) -> str:
     pos = str(pos).upper().strip()
     if 'D' in pos: return 'DIF'
     if 'A' in pos: return 'ATT'
-    # Copertura per centrocampo, ecc.
     return 'CEN' 
 
 def get_field_zone(heatmap: str) -> str:
@@ -50,11 +49,10 @@ class OptimizedCardPredictionModel:
         df['Rischio_Falli'] = df.get('Media Falli Fatti 90s Totale', 0)
         
         # Calcola l'inverso per Falli per Cartellino e 90s per Cartellino 
-        # (più basso è il valore, più alto è il rischio)
         df['Rischio_Efficacia'] = df.get('Media Falli per Cartellino Totale', 999).replace(0, 999).rdiv(1)
         df['Rischio_Frequenza'] = df.get('Media 90s per Cartellino Totale', 999).replace(0, 999).rdiv(1)
         
-        # Combinazione di rischio ponderata (semplificata)
+        # Combinazione di rischio ponderata
         df['Rischio'] = (
             df['Rischio_Falli'] * self.weights['Falli_Fatti'] +
             df['Rischio_Efficacia'] * self.weights['Falli_per_Cartellino'] * 0.5 + 
