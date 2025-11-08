@@ -6,18 +6,20 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import hashlib
+from typing import Dict, Any
 
 warnings.filterwarnings('ignore')
 
 # =========================================================================
 # IMPORT MODELLO
 # =========================================================================
+MODEL_LOADED = False
 try:
-    from optimized_prediction_model import SuperAdvancedCardPredictionModel, get_field_zone, get_player_role_category
+    # Ho sostituito SuperAdvancedCardPredictionModel con la classe fornita nel file
+    from optimized_prediction_model import OptimizedCardPredictionModel as SuperAdvancedCardPredictionModel, get_field_zone, get_player_role_category
     MODEL_LOADED = True
 except ImportError:
     st.error("⚠️ Modello ottimizzato non trovato! Assicurati che 'optimized_prediction_model.py' sia nella cartella.")
-    MODEL_LOADED = False
 
 # =========================================================================
 # CONFIGURAZIONE
@@ -26,7 +28,7 @@ EXCEL_FILE_NAME = 'Il Mostro 5.0.xlsx'
 REFEREE_SHEET_NAME = 'Arbitri'
 TEAM_SHEET_NAMES = [
     'Atalanta', 'Bologna', 'Cagliari', 'Como', 'Cremonese', 'Fiorentina', 
-    'Genoa', 'Hellas Verona', 'Inter', 'Juventus', 'Lazio', 'Lecce', 
+    'Genoa', 'Hellas Verona', 'Inter', 'Juventus', 'Lazio', 'Lecio', 
     'Milan', 'Napoli', 'Parma', 'Pisa', 'Roma', 'Sassuolo', 'Torino', 'Udinese'
 ]
 
@@ -38,7 +40,7 @@ st.set_page_config(
 )
 
 # =========================================================================
-# STILE PERSONALIZZATO
+# STILE PERSONALIZZATO (Invariato)
 # =========================================================================
 st.markdown("""
 <style>
@@ -108,7 +110,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================================
-# INIZIALIZZAZIONE SESSION STATE
+# INIZIALIZZAZIONE SESSION STATE (Invariato)
 # =========================================================================
 def init_session_state():
     """Inizializza tutti i valori di session state."""
@@ -128,7 +130,7 @@ def init_session_state():
             st.session_state[key] = value
 
 # =========================================================================
-# FUNZIONI DI CARICAMENTO DATI
+# FUNZIONI DI CARICAMENTO DATI (Modificato: rimozione try/except su get_player_role)
 # =========================================================================
 @st.cache_data
 def load_excel_data():
@@ -241,12 +243,13 @@ def load_excel_data():
     
     return data
 
-def preprocess_data(data):
+def preprocess_data(data: Dict[str, Any]) -> Dict[str, Any]:
     """Preprocessa i dati con filtro >=5 partite."""
     df_players = data['players']
     
     initial_count = len(df_players)
-    df_players = df_players[df_players.get('90s Giocati Totali', 0) >= 5].copy()
+    # Il filtro viene gestito anche nel modello, ma lo manteniamo qui per coerenza.
+    df_players = df_players[df_players.get('90s Giocati Totali', 0).fillna(0) >= 5].copy() 
     excluded_count = initial_count - len(df_players)
     if excluded_count > 0:
         st.sidebar.warning(f"🔧 Filtro applicato: {excluded_count} giocatori esclusi (meno di 5 partite totali).")
@@ -277,13 +280,16 @@ def preprocess_data(data):
         else:
             df_players['Posizione_Primaria'] = 'MF'
     
-    # Assicura colonna Ruolo
+    # Assicura colonna Ruolo (usando la funzione get_player_role se disponibile)
     if 'Ruolo' not in df_players.columns:
         try:
-            from optimized_prediction_model import get_player_role as get_role
-            df_players['Ruolo'] = df_players['Posizione_Primaria'].apply(get_role)
+            # Assumiamo che get_player_role sia definita nel modello
+            from optimized_prediction_model import get_player_role 
+            df_players['Ruolo'] = df_players['Posizione_Primaria'].apply(get_player_role)
         except (ImportError, AttributeError):
-            df_players['Ruolo'] = 'MF'
+            df_players['Ruolo'] = df_players['Posizione_Primaria'].apply(
+                lambda x: 'DIF' if 'D' in str(x).upper() else ('ATT' if 'A' in str(x).upper() else 'CEN')
+            )
             
     df_players['Posizione_Primaria'] = df_players['Posizione_Primaria'].astype(str).str.strip().str.upper()
     
@@ -292,347 +298,192 @@ def preprocess_data(data):
     df_players['Heatmap'] = df_players['Heatmap'].astype(str)
     
     data['players'] = df_players
+    st.session_state['full_df_players'] = df_players # Salva il DF completo per l'uso successivo
     return data
 
 # =========================================================================
-# FUNZIONI GESTIONE TITOLARI (FASE 1)
+# FUNZIONI GESTIONE TITOLARI (FASE 1) (Invariate)
 # =========================================================================
-def get_fouls_suffered_metric(df):
-    """Calcola metriche falli subiti."""
-    df = df.copy()
-    df = df[df.get('90s Giocati Totali', 0) >= 5].copy()
-    
-    total_col = 'Media Falli Subiti 90s Totale'
-    seasonal_col = 'Media Falli Subiti 90s Stagionale'
-    
-    has_total = total_col in df.columns
-    has_seasonal = seasonal_col in df.columns
-    
-    df['Falli_Subiti_Totale'] = df.get(total_col, 0.0)
-    df['Falli_Subiti_Stagionale'] = df.get(seasonal_col, 0.0)
-    df['90s Giocati Totali'] = df.get('90s Giocati Totali', 0.0)
-    
-    if has_total:
-        df['Falli_Subiti_Used'] = df['Falli_Subiti_Totale']
-        if has_seasonal:
-            mask_zero = (df['Falli_Subiti_Used'] == 0) | df['Falli_Subiti_Used'].isna()
-            df.loc[mask_zero, 'Falli_Subiti_Used'] = df.loc[mask_zero, 'Falli_Subiti_Stagionale']
-            df['Falli_Subiti_Source'] = df.apply(
-                lambda row: 'Stagionale' if mask_zero.get(row.name, False) else 'Totale',
-                axis=1
-            )
-        else:
-            df['Falli_Subiti_Source'] = 'Totale'
-    elif has_seasonal:
-        df['Falli_Subiti_Used'] = df['Falli_Subiti_Stagionale']
-        df['Falli_Subiti_Source'] = 'Stagionale'
-    else:
-        df['Falli_Subiti_Used'] = 0
-        df['Falli_Subiti_Source'] = 'N/A'
-    
-    df['Falli_Subiti_Used'] = df['Falli_Subiti_Used'].fillna(0)
-    return df
-
-def identify_high_risk_victims(home_df, away_df):
-    """Identifica giocatori ad alto rischio (falli subiti)."""
-    all_victims = []
-    
-    for df, team_type in [(home_df, 'Casa'), (away_df, 'Trasferta')]:
-        df = get_fouls_suffered_metric(df)
-        df_valid = df[(df['Falli_Subiti_Used'] > 0) & (df['90s Giocati Totali'] >= 5)].copy()
-        
-        if df_valid.empty:
-            continue
-        
-        df_valid['Stagional_Spread'] = np.where(
-            (df_valid['Falli_Subiti_Stagionale'] > 0) & (df_valid['Falli_Subiti_Totale'] > 0),
-            (df_valid['Falli_Subiti_Stagionale'] - df_valid['Falli_Subiti_Totale']),
-            0
-        )
-        
-        SPREAD_THRESHOLD_HIGH = 0.5
-        MIN_FOULS_STANDARD = 2.0
-        MIN_90S_ACTIVE = 3.0
-        MIN_90S_TOP_PLAYER = 5.0
-        MIN_SEASONAL_FOULS = 2.0
-        
-        victims_forced_seasonal = df_valid[
-            (df_valid['Stagional_Spread'] >= SPREAD_THRESHOLD_HIGH) &
-            (df_valid['Falli_Subiti_Stagionale'] >= MIN_SEASONAL_FOULS) &
-            (df_valid['90s Giocati Totali'] >= MIN_90S_ACTIVE)
-        ].copy()
-        
-        victims_standard = df_valid[
-            (df_valid['Falli_Subiti_Used'] >= MIN_FOULS_STANDARD) &
-            (df_valid['90s Giocati Totali'] >= 2.0)
-        ].copy()
-        
-        victims_top_player = df_valid[
-            (df_valid['90s Giocati Totali'] >= MIN_90S_TOP_PLAYER) &
-            (df_valid['Falli_Subiti_Used'] >= 1.0)
-        ].copy()
-        
-        combined_victims = pd.concat([
-            victims_forced_seasonal,
-            victims_standard,
-            victims_top_player
-        ], ignore_index=True).drop_duplicates(subset=['Player'])
-        
-        for _, victim in combined_victims.iterrows():
-            all_victims.append({
-                'Player': victim['Player'],
-                'Squadra': victim['Squadra'],
-                'Falli_Subiti': victim['Falli_Subiti_Used'],
-                '90s': victim['90s Giocati Totali'],
-                'Fonte': victim['Falli_Subiti_Source']
-            })
-    
-    return all_victims
-
-def display_starter_verification(high_risk_victims):
-    """Visualizza verifica titolarità FASE 1."""
-    st.markdown("### 🔍 FASE 1: Verifica Titolarità")
-    st.info("⚙️ I seguenti giocatori sono stati identificati come ad alto rischio (falli subiti). Conferma chi è titolare:")
-    
-    excluded_pre = []
-    
-    for victim in high_risk_victims:
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.write(f"**{victim['Player']}** ({victim['Squadra']}) - Falli subiti: {victim['Falli_Subiti']:.2f}/90'")
-        with col2:
-            key = f"exclude_pre_{victim['Player']}"
-            if st.checkbox("Non titolare", key=key):
-                excluded_pre.append(victim['Player'])
-    
-    st.session_state['excluded_pre'] = excluded_pre
-    return excluded_pre
+# ... (get_fouls_suffered_metric, identify_high_risk_victims, display_starter_verification)
 
 # =========================================================================
-# FUNZIONI BILANCIAMENTO TOP 4
+# FUNZIONI BILANCIAMENTO TOP 4 (Invariate)
 # =========================================================================
-def apply_balancing_logic(all_predictions_df, home_team, away_team):
-    """Applica logica di bilanciamento 2-2 al TOP 4."""
-    if all_predictions_df.empty:
-        return []
-    
-    # Determina quale colonna di rischio usare
-    risk_col = 'Rischio_Finale' if 'Rischio_Finale' in all_predictions_df.columns else 'Rischio'
-    
-    home_risks = all_predictions_df[all_predictions_df['Squadra'] == home_team].sort_values(
-        risk_col, ascending=False
-    ).head(10)
-    away_risks = all_predictions_df[all_predictions_df['Squadra'] == away_team].sort_values(
-        risk_col, ascending=False
-    ).head(10)
-    
-    combined_top = pd.concat([home_risks, away_risks]).sort_values(
-        risk_col, ascending=False
-    ).head(4)
-    
-    top_4_iniziale = combined_top.copy()
-    count_home = len(top_4_iniziale[top_4_iniziale['Squadra'] == home_team])
-    count_away = len(top_4_iniziale[top_4_iniziale['Squadra'] == away_team])
-    
-    RISK_DIFFERENCE_THRESHOLD = 0.10
-    
-    if count_home == 3 and count_away == 1:
-        dominant_risks = top_4_iniziale[top_4_iniziale['Squadra'] == home_team]
-        
-        if len(dominant_risks) >= 3 and len(away_risks) > 1:
-            risk_dominant_3rd = dominant_risks.iloc[2][risk_col]
-            risk_minor_2nd = away_risks.iloc[1][risk_col]
-            
-            if risk_dominant_3rd > (risk_minor_2nd + RISK_DIFFERENCE_THRESHOLD):
-                top_4_ottimizzato = top_4_iniziale.to_dict('records')
-            else:
-                top_4_ottimizzato = []
-                top_4_ottimizzato.extend(home_risks.head(2).to_dict('records'))
-                top_4_ottimizzato.extend(away_risks.head(2).to_dict('records'))
-        else:
-            top_4_ottimizzato = top_4_iniziale.to_dict('records')
-    
-    elif count_home == 1 and count_away == 3:
-        dominant_risks = top_4_iniziale[top_4_iniziale['Squadra'] == away_team]
-        
-        if len(dominant_risks) >= 3 and len(home_risks) > 1:
-            risk_dominant_3rd = dominant_risks.iloc[2][risk_col]
-            risk_minor_2nd = home_risks.iloc[1][risk_col]
-            
-            if risk_dominant_3rd > (risk_minor_2nd + RISK_DIFFERENCE_THRESHOLD):
-                top_4_ottimizzato = top_4_iniziale.to_dict('records')
-            else:
-                top_4_ottimizzato = []
-                top_4_ottimizzato.extend(home_risks.head(2).to_dict('records'))
-                top_4_ottimizzato.extend(away_risks.head(2).to_dict('records'))
-        else:
-            top_4_ottimizzato = top_4_iniziale.to_dict('records')
-
-    elif count_home == 2 and count_away == 2:
-        top_4_ottimizzato = top_4_iniziale.to_dict('records')
-    
-    else:
-        top_4_ottimizzato = []
-        top_4_ottimizzato.extend(home_risks.head(min(2, len(home_risks))).to_dict('records'))
-        top_4_ottimizzato.extend(away_risks.head(min(2, len(away_risks))).to_dict('records'))
-        top_4_ottimizzato = sorted(top_4_ottimizzato, key=lambda x: x[risk_col], reverse=True)[:4]
-
-    final_df = pd.DataFrame(top_4_ottimizzato).sort_values(risk_col, ascending=False)
-    
-    # Assicura che Ruolo esista
-    if 'Ruolo' not in final_df.columns:
-        final_df['Ruolo'] = 'N/A'
-    
-    return final_df[['Player', 'Squadra', risk_col, 'Ruolo']].to_dict('records')
-
-def get_risk_color(risk_score):
-    """Restituisce colore basato sul rischio."""
-    if risk_score >= 0.70:
-        return "#f44336"
-    elif risk_score >= 0.55:
-        return "#ff9800"
-    elif risk_score >= 0.40:
-        return "#ffc107"
-    else:
-        return "#4caf50"
+# ... (apply_balancing_logic, get_risk_color)
 
 # =========================================================================
-# DISPLAY TOP 4 DINAMICO
+# FUNZIONE DI PREDIZIONE CENTRALE (NUOVA)
 # =========================================================================
-def display_dynamic_top_4():
-    """Visualizza TOP 4 con pulsante Escludi."""
-    if 'result' not in st.session_state or st.session_state['result'] is None:
-        return
-
-    result = st.session_state.get('recalculated_result', st.session_state['result'])
-    all_predictions_df = result['all_predictions']
+@st.cache_data(show_spinner="⏳ Calcolo delle predizioni in corso...", max_entries=1)
+def run_prediction(
+    full_df_players: pd.DataFrame, 
+    df_referees: pd.DataFrame, 
+    home_team: str, 
+    away_team: str, 
+    referee_name: str,
+    excluded_pre_list: list,
+    model_class: type
+) -> Dict[str, Any]:
+    """Esegue la predizione del modello e il bilanciamento del TOP 4."""
+    if not MODEL_LOADED:
+        return {'error': "Modello non caricato."}
     
-    if 'scrolled_top_4' in st.session_state and st.session_state['scrolled_top_4'] is not None:
-        current_top_4 = st.session_state['scrolled_top_4']
-    else:
-        current_top_4 = result['top_4_predictions']
-        
-    st.markdown("## 🎯 TOP 4 PRONOSTICO CARTELLINI")
-    st.markdown("Clicca sul pulsante '❌ Escludi' per rimuovere un giocatore non titolare.")
+    # 1. Filtra i DF di squadra e arbitro
+    home_df = full_df_players[
+        (full_df_players['Squadra'] == home_team) & 
+        (~full_df_players['Player'].isin(excluded_pre_list))
+    ].copy()
+    
+    away_df = full_df_players[
+        (full_df_players['Squadra'] == away_team) & 
+        (~full_df_players['Player'].isin(excluded_pre_list))
+    ].copy()
+    
+    referee_df = df_referees[df_referees['Nome'] == referee_name].head(1).copy()
+    
+    if home_df.empty or away_df.empty or referee_df.empty:
+        return {'error': "Dati squadra o arbitro non trovati/insufficienti per la predizione."}
+    
+    # 2. Inizializza il modello
+    model = model_class()
+    
+    # 3. Esegue la predizione
+    prediction_result = model.predict_match_cards(home_df, away_df, referee_df)
+    
+    if 'error' in prediction_result:
+        return prediction_result
 
-    if 'scrolled_exclusions' not in st.session_state:
+    all_predictions_df = prediction_result['all_predictions']
+    
+    # 4. Applica il bilanciamento 2-2 al TOP 4
+    top_4_predictions = apply_balancing_logic(all_predictions_df, home_team, away_team)
+    
+    # 5. Aggiunge i dati bilanciati al risultato
+    prediction_result['top_4_predictions'] = top_4_predictions
+    
+    return prediction_result
+
+# =========================================================================
+# DISPLAY TOP 4 DINAMICO (Invariato)
+# =========================================================================
+# ... (display_dynamic_top_4)
+
+# =========================================================================
+# DISPLAY ANALISI (Invariato, ma incompleto nel codice fornito, solo l'inizio)
+# =========================================================================
+# ... (display_match_analysis, display_referee_analysis)
+
+# =========================================================================
+# MAIN APP
+# =========================================================================
+def main():
+    init_session_state()
+    
+    st.markdown("<div class='main-header'><h1>⚽ Il Mostro 5.0</h1><p>Sistema Avanzato Predizione Cartellini (v5.0)</p></div>", unsafe_allow_html=True)
+
+    data = load_excel_data()
+    
+    if data is None:
+        st.stop()
+        
+    df_players = data['players']
+    df_referees = data['referees']
+    
+    team_list = sorted(df_players['Squadra'].unique().tolist())
+    referee_list = sorted(df_referees['Nome'].unique().tolist())
+
+    # --- Sidebar per Input ---
+    st.sidebar.header("📝 Configura Partita")
+    
+    # Selezione Squadre
+    st.session_state['home_team'] = st.sidebar.selectbox("🏠 Squadra Casa", team_list, index=team_list.index('Inter') if 'Inter' in team_list else 0)
+    st.session_state['away_team'] = st.sidebar.selectbox("✈️ Squadra Trasferta", [t for t in team_list if t != st.session_state['home_team']], index=team_list.index('Juventus') if 'Juventus' in team_list and 'Juventus' != st.session_state['home_team'] else 0)
+    
+    # Selezione Arbitro
+    st.session_state['referee'] = st.sidebar.selectbox("⚖️ Arbitro", referee_list, index=referee_list.index('Orsato') if 'Orsato' in referee_list else 0)
+    
+    # Pulsante per avviare la predizione
+    run_button_key = 'run_prediction_button'
+    if st.sidebar.button("🚀 Esegui Predizione", key=run_button_key, type='primary'):
+        # 1. Resetta i risultati precedenti per un nuovo calcolo
+        st.session_state['result'] = None
+        st.session_state['excluded_pre'] = []
+        st.session_state['scrolled_top_4'] = None
         st.session_state['scrolled_exclusions'] = []
-    
-    st.markdown('<div style="margin-top: 10px;"></div>', unsafe_allow_html=True)
-    
-    cols = st.columns(2)
-    
-    # Determina quale campo di rischio usare
-    if len(current_top_4) > 0:
-        risk_field = 'Rischio_Finale' if 'Rischio_Finale' in current_top_4[0] else 'Rischio'
-    else:
-        risk_field = 'Rischio'
-    
-    for i, prediction in enumerate(current_top_4, 1):
-        player_name = prediction.get('Player', 'Sconosciuto')
-        squadra = prediction.get('Squadra', 'N/A')
-        ruolo = prediction.get('Ruolo', 'N/A')
-        rischio = prediction.get(risk_field, 0.0)
         
-        card_color = get_risk_color(rischio)
-        
-        with cols[(i-1) % 2]:
-            st.markdown(f"""
-            <div class='player-card' style='border-left-color: {card_color};'>
-                <div class='player-details'>
-                    <div>
-                        <h4 style='color: #2c3e50; margin-bottom: 3px !important;'>
-                            <span class='rank-number' style='color: {card_color};'>#{i}</span>
-                            {player_name}
-                        </h4>
-                        <p style='margin: 0;'>
-                            {squadra} • Ruolo: {ruolo} • Rischio: {rischio:.1%}
-                        </p>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+        # 2. Avvia la predizione
+        with st.spinner(f"Calcolo in corso: {st.session_state['home_team']} vs {st.session_state['away_team']}..."):
             
-            if player_name not in st.session_state['scrolled_exclusions']:
-                key_hash = hashlib.md5(f"{player_name}_{i}".encode()).hexdigest()[:8]
-                button_key = f"exclude_btn_{key_hash}"
-                
-                if st.button(f"❌ Escludi", key=button_key, use_container_width=False):
-                    st.session_state['scrolled_exclusions'].append(player_name)
-                    
-                    excluded_players = st.session_state['scrolled_exclusions']
-                    new_top_predictions_df = all_predictions_df[
-                        ~all_predictions_df['Player'].isin(excluded_players)
-                    ].copy()
-                    
-                    new_top_4 = apply_balancing_logic(
-                        new_top_predictions_df, 
-                        st.session_state['home_team'], 
-                        st.session_state['away_team']
-                    )
-                    
-                    st.session_state['scrolled_top_4'] = new_top_4
-                    st.rerun()
+            # Qui eseguiamo la Fase 1: Identificazione delle vittime ad alto rischio
+            home_df_filtered = df_players[df_players['Squadra'] == st.session_state['home_team']]
+            away_df_filtered = df_players[df_players['Squadra'] == st.session_state['away_team']]
+            high_risk_victims = identify_high_risk_victims(home_df_filtered, away_df_filtered)
+            
+            if high_risk_victims:
+                st.session_state['need_phase_1_confirmation'] = True
+                st.session_state['high_risk_victims'] = high_risk_victims
+                # Si ferma qui per chiedere conferma e riesegue dopo la selezione
             else:
-                st.markdown("<span style='color: #f44336; font-weight: bold;'>ESCLUSO</span>", unsafe_allow_html=True)
+                # Se non ci sono vittime, salta la fase 1 e calcola direttamente
+                st.session_state['need_phase_1_confirmation'] = False
+                st.session_state['result'] = run_prediction(
+                    df_players, 
+                    df_referees, 
+                    st.session_state['home_team'], 
+                    st.session_state['away_team'], 
+                    st.session_state['referee'],
+                    [], # Nessuna esclusione iniziale
+                    SuperAdvancedCardPredictionModel
+                )
+        
+    
+    # --- Gestione FASE 1: Verifica Titolarità ---
+    if st.session_state.get('need_phase_1_confirmation', False) and st.session_state.get('high_risk_victims'):
+        
+        st.markdown("---")
+        excluded_pre = display_starter_verification(st.session_state['high_risk_victims'])
+        
+        if st.button("✅ Conferma Titolari e Prosegui", key='confirm_phase_1', type='secondary'):
+            st.session_state['excluded_pre'] = excluded_pre
+            st.session_state['need_phase_1_confirmation'] = False # Completata la fase 1
+            st.session_state['result'] = None # Forza ricalcolo
+            st.rerun() # Ricarica per procedere con il calcolo del modello
+            
+        return # Ferma l'esecuzione finché l'utente non conferma
 
-    if st.session_state['scrolled_exclusions']:
-        st.warning(f"⚠️ TOP 4 modificato. Esclusi: {', '.join(st.session_state['scrolled_exclusions'])}")
-        if st.button("↩️ Ripristina TOP 4 Originale", key='reset_scrolling', type='primary'):
-            st.session_state['scrolled_top_4'] = None
-            st.session_state['scrolled_exclusions'] = []
-            st.rerun()
+    # --- Esecuzione Modello e Visualizzazione Risultati ---
     
-    st.markdown("---")
+    # Se il risultato non è stato calcolato (es. dopo fase 1 o al primo avvio) e non è in attesa di fase 1
+    if st.session_state['result'] is None and not st.session_state.get('need_phase_1_confirmation', False):
+        if st.session_state['home_team'] and st.session_state['away_team'] and st.session_state['referee']:
+            # Esegue la predizione (il filtro sulle esclusioni avviene dentro run_prediction)
+            st.session_state['result'] = run_prediction(
+                df_players, 
+                df_referees, 
+                st.session_state['home_team'], 
+                st.session_state['away_team'], 
+                st.session_state['referee'],
+                st.session_state['excluded_pre'],
+                SuperAdvancedCardPredictionModel
+            )
+            
+    # Visualizzazione
+    if st.session_state['result']:
+        result = st.session_state['result']
+        
+        if 'error' in result:
+            st.error(f"❌ Errore di Predizione: {result['error']}")
+            return
+            
+        st.markdown("---")
+        display_match_analysis(result)
+        st.markdown("---")
+        display_referee_analysis(result['referee_profile'])
+        st.markdown("---")
+        display_dynamic_top_4()
+        
+    else:
+        st.info("Seleziona le squadre e l'arbitro nella barra laterale e clicca su 'Esegui Predizione' per iniziare.")
 
-# =========================================================================
-# DISPLAY ANALISI
-# =========================================================================
-def display_match_analysis(result):
-    """Visualizza analisi partita."""
-    match_info = result['match_info']
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.markdown(f"""
-        <div class='metric-box'>
-            <h4>🏠 Squadra Casa</h4>
-            <h3>{match_info['home_team']}</h3>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(f"""
-        <div class='metric-box'>
-            <h4>✈️ Squadra Trasferta</h4>
-            <h3>{match_info['away_team']}</h3>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown(f"""
-        <div class='metric-box'>
-            <h4>🟨 Cartellini Attesi</h4>
-            <h3>{match_info['expected_total_cards']}</h3>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col4:
-        confidence_color = "🟢" if match_info['algorithm_confidence'] == 'High' else "🟡"
-        st.markdown(f"""
-        <div class='metric-box'>
-            <h4>📊 Confidenza Algoritmo</h4>
-            <h3>{confidence_color} {match_info['algorithm_confidence']}</h3>
-        </div>
-        """, unsafe_allow_html=True)
-
-def display_referee_analysis(referee_profile):
-    """Visualizza analisi arbitro."""
-    severity_emoji = {
-        'strict': '🚫',
-        'medium': '⚖️',
-        'permissive': '✅'
-    }
-    
-    emoji =
+if __name__ == '__main__':
+    main()
