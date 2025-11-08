@@ -6,7 +6,7 @@ from typing import Dict, Any, List, Tuple
 warnings.filterwarnings('ignore')
 
 # =========================================================================
-# CONSTANTI E FUNZIONI AUSILIARIE
+# COSTANTI E FUNZIONI AUSILIARIE
 # =========================================================================
 
 # Ponderazioni utilizzate nel calcolo del rischio AGGIORNATE
@@ -42,6 +42,10 @@ def normalize_data(df: pd.DataFrame) -> pd.DataFrame:
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    # Gestione colonna Player se non presente (compatibilità)
+    if 'Player' not in df.columns:
+        df['Player'] = df.get('Nome Giocatore', df.get('Nome', '')).astype(str)
     
     return df
 
@@ -123,8 +127,8 @@ class OptimizedCardPredictionModel:
         high_risk_victims = high_risk_victims or []
         
         # Identifica ruoli e zone
-        home_df['Zone'] = home_df['Heatmap'].apply(get_field_zone)
-        away_df['Zone'] = away_df['Heatmap'].apply(get_field_zone)
+        home_df['Zone'] = home_df['Heatmap'].apply(get_field_zone) if 'Heatmap' in home_df.columns else 'midfield'
+        away_df['Zone'] = away_df['Heatmap'].apply(get_field_zone) if 'Heatmap' in away_df.columns else 'midfield'
         
         # Aggiungi bonus matchup
         home_df['Matchup_Bonus'] = 0.0
@@ -205,13 +209,15 @@ class OptimizedCardPredictionModel:
         df['Rischio_Falli'] = df['Media Falli Fatti 90s Totale'] / max_fouls if max_fouls > 0 else 0
         
         # 2. Rischio da Efficacia Cartellini (inverso: meno falli per cartellino = più pericoloso)
-        df['Rischio_Efficacia'] = df['Media Falli per Cartellino Totale'].replace(0, 999).apply(
-            lambda x: min(1.0, self.thresholds['card_efficiency'] / x) if x > 0 else 0
+        fouls_per_card = df['Media Falli per Cartellino Totale'].replace(0, 999)
+        df['Rischio_Efficacia'] = fouls_per_card.apply(
+            lambda x: min(1.0, self.thresholds['card_efficiency'] / x)
         )
         
         # 3. Rischio da Frequenza Cartellini (inverso: meno 90' tra cartellini = più frequente)
-        df['Rischio_Frequenza'] = df['Media 90s per Cartellino Totale'].replace(0, 999).apply(
-            lambda x: min(1.0, self.thresholds['frequent_cards'] / x) if x > 0 else 0
+        nineties_per_card = df['Media 90s per Cartellino Totale'].replace(0, 999)
+        df['Rischio_Frequenza'] = nineties_per_card.apply(
+            lambda x: min(1.0, self.thresholds['frequent_cards'] / x)
         )
         
         # 4. Rischio da Falli Subiti (normalizzato)
@@ -284,6 +290,10 @@ class OptimizedCardPredictionModel:
                 'excluded_count': {'home': excluded_home, 'away': excluded_away}
             }
         
+        # Assegna ruoli ai giocatori
+        home_df['Ruolo'] = home_df['Posizione_Primaria'].apply(get_player_role)
+        away_df['Ruolo'] = away_df['Posizione_Primaria'].apply(get_player_role)
+        
         # 2. Identifica categorie di giocatori
         home_df = self.identify_aggressive_players(home_df)
         away_df = self.identify_aggressive_players(away_df)
@@ -355,7 +365,7 @@ class OptimizedCardPredictionModel:
                 'Description': f"Arbitro con media di {referee_avg:.1f} gialli/partita ({referee_severity})"
             },
             'all_predictions': all_predictions_df,
-            'top_4_predictions': [],  # Verrà popolato da apply_balancing_logic in app.py
+            'top_4_predictions': [],  # Verrà popolato da apply_balancing_logic se presente
             'algorithm_summary': {
                 'methodology': 'Modello Avanzato v2.0 - Matchup Tattici + Falli Subiti',
                 'weights_used': self.weights,
@@ -370,5 +380,11 @@ class OptimizedCardPredictionModel:
         }
 
 
-# Alias per compatibilità con app.py
+# Alias per compatibilità
 SuperAdvancedCardPredictionModel = OptimizedCardPredictionModel
+
+# Se è un'app standalone, aggiungi un main di test opzionale
+if __name__ == "__main__":
+    print("Modello caricato correttamente.")
+    model = OptimizedCardPredictionModel()
+    print("Istanza del modello creata.")
